@@ -6,7 +6,7 @@ A self-hosted, end-to-end encrypted messenger with **live typing**: see what the
 - Rust backend in Docker, designed to scale across servers
 - End-to-end encryption (MLS), OPAQUE password login, no metadata logs
 
-> **Status: early development.** The crypto core, accounts and the messaging server (message requests, encrypted log, live-typing relay) are built and tested; the Flutter app is in progress. Not audited. Do not use for high-risk communication.
+> **Status: early development.** The crypto core, accounts, the messaging server and the Flutter app (web and Linux desktop verified) work end to end, including live typing, and are covered by automated tests. Mobile and other desktop builds are not verified yet. This is pre-release software. Not audited. Do not use for high-risk communication.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the design, [docs/API.md](docs/API.md) for the server API, [docs/CORE_API.md](docs/CORE_API.md) for the client crypto boundary, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
 
@@ -18,21 +18,32 @@ crates/yap-core     client core: MLS, OPAQUE client, typing frames (native + WAS
 crates/yap-ffi      C ABI over the core (native Flutter platforms)
 crates/yap-wasm     wasm-bindgen binding over the core (browser)
 crates/yap-server   gateway server
-app/                Flutter app
+app/                Flutter app (UI, API client, local storage)
+e2e/                browser end-to-end tests (Playwright)
 deploy/             Docker Compose (home) and HAProxy/WireGuard (VPS)
 docs/               design and threat model
 ```
 
 ## Development
 
-Requires Rust (stable) with the `wasm32-unknown-unknown` target, and [just](https://github.com/casey/just).
+Requires Rust (stable) with the `wasm32-unknown-unknown` target, the Flutter SDK, Docker, and
+[just](https://github.com/casey/just) (optional: the recipes are plain commands).
 
 ```sh
-just test         # unit + core tests (server integration tests skip without a database)
+just test         # Rust unit + core tests (server integration tests skip without a database)
 just test-server  # server integration tests against a throwaway Postgres (needs Docker)
-just lint         # fmt + clippy
+just app-test     # Dart tests: the real Rust core called over FFI
 just wasm-test    # run the core's MLS + OPAQUE tests inside WASM (needs wasm-bindgen-cli)
+just web-app      # build the Rust core to WASM and the Flutter web app
+just e2e          # two real browsers chat through a real gateway (after `just web-app`)
+just lint         # fmt + clippy
 ```
+
+To try it locally, run Postgres and the gateway (`cargo run -p yap-server`) with the variables
+from `.env.example`. For local development set `YAP_DEV_MAIL_FILE` (emails, including the
+verification code, are appended to that file instead of being sent) and `YAP_WEB_DIR=app/build/web`
+(the gateway then also serves the web app). `YAP_DOMAIN` must equal the hostname you browse to,
+because OPAQUE binds it into the login.
 
 Copy `.env.example` to `.env` for local config. Never commit `.env`.
 

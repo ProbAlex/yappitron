@@ -3,8 +3,8 @@ use std::sync::Arc;
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 use yap_server::config::Config;
-use yap_server::mail::SmtpMailer;
-use yap_server::{AppState, migrate, router, sweep_forever};
+use yap_server::mail::{FileMailer, Mailer, SmtpMailer};
+use yap_server::{AppState, migrate, router, serve_web, sweep_forever};
 
 #[tokio::main]
 async fn main() {
@@ -30,14 +30,27 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("database: {e}"))?;
     migrate(&db).await.map_err(|e| format!("migrations: {e}"))?;
 
-    let mailer = Arc::new(SmtpMailer::new(&cfg.smtp)?);
+    let mailer: Arc<dyn Mailer> = match (&cfg.dev_mail_file, &cfg.smtp) {
+        (Some(path), _) => {
+            eprintln!(
+                "WARNING: YAP_DEV_MAIL_FILE is set; emails are written to {path:?} (development only)"
+            );
+            Arc::new(FileMailer(path.clone()))
+        }
+        (None, Some(smtp)) => Arc::new(SmtpMailer::new(smtp)?),
+        (None, None) => unreachable!("Config::from_env requires one of them"),
+    };
     let state = AppState::new(db.clone(), &cfg.secret, &cfg.domain, mailer).await?;
     tokio::spawn(sweep_forever(db));
 
     let listener = tokio::net::TcpListener::bind(cfg.bind)
         .await
         .map_err(|e| format!("bind {}: {e}", cfg.bind))?;
-    axum::serve(listener, router(state))
+    let mut app = router(state);
+    if let Some(dir) = &cfg.web_dir {
+        app = serve_web(app, dir);
+    }
+    axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

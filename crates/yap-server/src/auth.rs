@@ -518,9 +518,11 @@ pub async fn reset_start(
         .map_err(|_| ApiError::BadRequest("invalid registration request"))?;
     let result = ServerRegistration::<YapOpaque>::start(&st.setup, request, name.as_bytes())
         .map_err(|_| ApiError::Internal("opaque registration start"))?;
-    Ok(Json(
-        json!({ "response": B64.encode(result.message.serialize()) }),
-    ))
+    Ok(Json(json!({
+        "response": B64.encode(result.message.serialize()),
+        // The client needs it as the OPAQUE identifier; the caller proved they own the email.
+        "username": name,
+    })))
 }
 
 pub async fn reset_finish(

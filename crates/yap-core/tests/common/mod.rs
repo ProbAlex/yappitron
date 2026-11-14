@@ -381,6 +381,40 @@ pub fn api_end_to_end_chat_and_typing() {
     );
 }
 
+pub fn vault_seals_and_binds_to_key_and_context() {
+    let key = [9u8; 32];
+    let sealed = rpc(method::VAULT_SEAL, &[&key, b"history:conv-1", b"hello"])
+        .unwrap()
+        .remove(0);
+    assert!(!sealed.windows(5).any(|w| w == b"hello"));
+    assert_eq!(
+        rpc(method::VAULT_OPEN, &[&key, b"history:conv-1", &sealed]).unwrap()[0],
+        b"hello"
+    );
+    assert!(
+        rpc(
+            method::VAULT_OPEN,
+            &[&[8u8; 32], b"history:conv-1", &sealed]
+        )
+        .is_err(),
+        "wrong key"
+    );
+    assert!(
+        rpc(method::VAULT_OPEN, &[&key, b"history:conv-2", &sealed]).is_err(),
+        "wrong context"
+    );
+    let mut bad = sealed.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(
+        rpc(method::VAULT_OPEN, &[&key, b"history:conv-1", &bad]).is_err(),
+        "tampered"
+    );
+    assert!(
+        rpc(method::VAULT_OPEN, &[&key, b"x", &sealed[..10]]).is_err(),
+        "truncated"
+    );
+}
+
 pub fn api_errors_are_returned_not_panicked() {
     assert!(rpc(method::KEY_PACKAGE, &[&1234u32.to_le_bytes()]).is_err());
     assert!(rpc(method::KEY_PACKAGE, &[]).is_err(), "missing argument");

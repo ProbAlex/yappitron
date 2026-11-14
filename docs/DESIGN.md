@@ -80,10 +80,10 @@ The server must know the contact graph and sequence numbers. A `Bus` trait is in
 
 | | Milestone |
 |---|---|
-| M0 | Spike: OpenMLS and opaque-ke on native + WASM. Go/no-go, with the vodozemac fallback. **Done:** MLS (including the live-typing key) and OPAQUE pass the same tests natively and inside WASM. Not yet done: the Flutter bridge (needs the Flutter SDK) |
+| M0 | Spike: OpenMLS and opaque-ke on native + WASM. Go/no-go, with the vodozemac fallback. **Done:** MLS (including the live-typing key) and OPAQUE pass the same tests natively and inside WASM. The bridge is a byte-level API (see `docs/CORE_API.md`): a C ABI for native and wasm-bindgen for the web, instead of flutter_rust_bridge |
 | M1 | Server skeleton, signup/login/reset with OPAQUE + email verification, real network path. **Server half done** (see `docs/API.md`); the real VPS path and client screens remain |
-| M2 | Message requests, 1:1 messaging, stored log, offline catch-up. **Server done** (REST + WebSocket, 16 integration tests); client UI next |
-| M3 | Live typing. **Server relay done and tested over a real socket**; client UI next |
+| M2 | Message requests, 1:1 messaging, stored log, offline catch-up. **Done** end to end (server, core, Flutter UI). Verified with 16 server integration tests and a two-browser end-to-end test |
+| M3 | Live typing. **Done**: drafts batch every 200 ms and appear live in the other browser; verified end to end |
 | M4 | Multi-device approval, history archive, recovery key, identity reset |
 | M5 | Platform builds, backups, hardening, no-log audit |
 

@@ -12,6 +12,8 @@
 secrets/
 
 # Flutter / Dart
+# (generated) the Rust core compiled for the browser; rebuild with `just web-core`
+app/web/yap_wasm/
 app/.dart_tool/
 app/build/
 app/.flutter-plugins*
@@ -27,3 +29,8 @@ app/pubspec.lock.bak
 /data/
 *.sqlite
 *.log
+
+# End-to-end tests
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/

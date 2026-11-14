@@ -576,13 +576,9 @@ pub async fn post_message(
         .bind(&data)
         .execute(&mut *tx)
         .await?;
-    // The sender does not get its own message back; remember it has "seen" this one.
-    sqlx::query("UPDATE device_cursors SET last_seq = GREATEST(last_seq, $3) WHERE device_id = $1 AND conversation_id = $2")
-        .bind(me.device)
-        .bind(id)
-        .bind(seq)
-        .execute(&mut *tx)
-        .await?;
+    // The sender's cursor is NOT advanced here: that could skip another member's message that is
+    // still in flight. Clients acknowledge contiguous progress themselves (their own sequence
+    // numbers included), and replayed own messages are recognised and skipped.
     tx.commit().await?;
 
     let msg: Arc<str> =

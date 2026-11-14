@@ -15,6 +15,7 @@ use yap_proto::username;
 use crate::auth::{self, LoginInProgress, RegistrationInProgress};
 use crate::mls::Device;
 use crate::typing;
+use crate::vault;
 
 /// Method ids. Keep in sync with `docs/CORE_API.md` and the Dart client.
 pub mod method {
@@ -37,6 +38,8 @@ pub mod method {
     pub const AUTH_LOGIN_START: u16 = 22;
     pub const AUTH_LOGIN_FINISH: u16 = 23;
     pub const USERNAME_CANONICALIZE: u16 = 30;
+    pub const VAULT_SEAL: u16 = 40;
+    pub const VAULT_OPEN: u16 = 41;
 }
 
 enum Obj {
@@ -282,6 +285,11 @@ fn dispatch(m: u16, a: &Args) -> Res {
         USERNAME_CANONICALIZE => username::canonicalize(a.str(0)?)
             .map(|n| vec![n.into_bytes()])
             .map_err(|e| e.message().to_string()),
+        // args: key32, context, plaintext / sealed
+        VAULT_SEAL => Ok(vec![vault::seal(&a.key32(0)?, a.bytes(1)?, a.bytes(2)?)]),
+        VAULT_OPEN => Ok(vec![
+            vault::open(&a.key32(0)?, a.bytes(1)?, a.bytes(2)?).map_err(err)?,
+        ]),
         other => Err(format!("unknown method {other}")),
     }
 }

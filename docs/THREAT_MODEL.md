@@ -14,6 +14,18 @@
 - Message sizes and the order in which ciphertexts arrive.
 - IP addresses of connecting clients, transiently. They are not logged.
 
+## On the device
+
+- **Keys and history** are sealed with ChaCha20-Poly1305 under a random key. On Linux, Windows,
+  macOS, Android and iOS that key lives in the platform keystore. **On the web there is no
+  hardware keystore**: the key sits in the browser's storage next to the data, which only
+  protects against casual access to the disk, not against malicious scripts or someone using
+  the unlocked browser.
+- **Web fonts**: the web build bundles its fonts and CanvasKit, and the strict CSP blocks
+  everything else, so the page never contacts a third party (asserted by the end-to-end tests).
+  The cost: text needing glyphs the bundled font lacks (some scripts, emoji) may render as boxes
+  on the web until a fuller font is bundled. Native apps use system fonts.
+
 ## Known limits
 
 - **Web client**: the server delivers the JavaScript, so a compromised server could ship malicious code. Mitigations: strict CSP, self-hosted assets, published source.

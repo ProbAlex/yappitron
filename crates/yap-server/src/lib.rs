@@ -13,8 +13,11 @@ pub mod ws;
 
 use std::time::Duration;
 
+use std::path::Path;
+
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderName, HeaderValue};
 use axum::routing::{get, post};
 
 pub use state::AppState;
@@ -88,4 +91,35 @@ pub async fn sweep_forever(db: sqlx::PgPool) {
             }
         }
     }
+}
+
+/// Content-Security-Policy for the web app. Everything is self-hosted (CanvasKit, fonts and the
+/// WASM core are bundled), so no third-party origin is ever contacted. Keep in sync with
+/// `deploy/home/caddy/Caddyfile`.
+pub const WEB_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; \
+    worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+
+/// Serve the built web app (with security headers) for any path the API does not handle.
+pub fn serve_web(router: Router, dir: &Path) -> Router {
+    use tower_http::services::{ServeDir, ServeFile};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    let files = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
+    let header = |name: &'static str, value: &'static str| {
+        SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        )
+    };
+    router
+        .fallback_service(files)
+        .layer(header("content-security-policy", WEB_CSP))
+        .layer(header("x-content-type-options", "nosniff"))
+        .layer(header("referrer-policy", "no-referrer"))
+        .layer(header("x-frame-options", "DENY"))
+        .layer(header(
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=()",
+        ))
 }

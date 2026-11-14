@@ -74,3 +74,21 @@ impl Mailer for MemoryMailer {
         Ok(())
     }
 }
+
+/// DEVELOPMENT ONLY. Appends one JSON line per email to a file. Writes recipient addresses and
+/// codes to disk, so it is only reachable through the explicit `YAP_DEV_MAIL_FILE` setting.
+pub struct FileMailer(pub std::path::PathBuf);
+
+#[async_trait]
+impl Mailer for FileMailer {
+    async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), String> {
+        use std::io::Write as _;
+        let line = serde_json::json!({ "to": to, "subject": subject, "body": body }).to_string();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.0)
+            .map_err(|e| format!("open dev mail file: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("write dev mail file: {e}"))
+    }
+}

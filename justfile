@@ -29,6 +29,25 @@ wasm-check:
 wasm-test:
     cargo test -p yap-core --target wasm32-unknown-unknown --test wasm
 
+# Compile the Rust core for the browser into app/web/yap_wasm (needs wasm-bindgen-cli).
+web-core:
+    cargo build -p yap-wasm --target wasm32-unknown-unknown --release
+    wasm-bindgen --target web --no-typescript --out-dir app/web/yap_wasm target/wasm32-unknown-unknown/release/yap_wasm.wasm
+
+# Build the web app. CanvasKit and fonts are bundled (nothing is fetched from a CDN) and the
+# output satisfies the strict Content-Security-Policy.
+web-app: web-core
+    cd app && flutter build web --release --no-web-resources-cdn --csp
+
+# Run Dart unit tests against the real core over FFI.
+app-test:
+    cargo build -p yap-ffi
+    cd app && YAP_NATIVE_LIB=$(pwd)/../target/debug/libyap_ffi.so flutter test
+
+# Browser end-to-end tests: two real browsers chat through a real gateway (needs `just web-app`).
+e2e:
+    e2e/run.sh
+
 # Start the home stack (gateway + postgres) from deploy/home.
 up:
     docker compose -f deploy/home/compose.yml --env-file .env up -d --build

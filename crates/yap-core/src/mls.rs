@@ -4,14 +4,10 @@
 //! and loaded from the device's storage on every call, so the whole state can be exported to
 //! an encrypted blob ([`Device::export`]) and restored later ([`Device::import`]).
 
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::{MemoryStorage, OpenMlsRustCrypto};
-use rand::RngCore;
-use rand::rngs::OsRng;
 use std::collections::HashMap;
 
 /// MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
@@ -142,37 +138,12 @@ impl Device {
         }
         encode_storage(self.provider.storage(), &mut plain)?;
 
-        let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
-        let ct = ChaCha20Poly1305::new(key.into())
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &plain,
-                    aad: BLOB_AAD,
-                },
-            )
-            .map_err(|_| Error::BadBlob)?;
-        let mut out = nonce.to_vec();
-        out.extend(ct);
-        Ok(out)
+        Ok(crate::vault::seal(key, BLOB_AAD, &plain))
     }
 
     /// Restore a device from [`Device::export`] output.
     pub fn import(blob: &[u8], key: &[u8; 32]) -> Result<Self, Error> {
-        if blob.len() < 12 + 16 {
-            return Err(Error::BadBlob);
-        }
-        let (nonce, ct) = blob.split_at(12);
-        let plain = ChaCha20Poly1305::new(key.into())
-            .decrypt(
-                Nonce::from_slice(nonce),
-                Payload {
-                    msg: ct,
-                    aad: BLOB_AAD,
-                },
-            )
-            .map_err(|_| Error::BadBlob)?;
+        let plain = crate::vault::open(key, BLOB_AAD, blob).map_err(|_| Error::BadBlob)?;
         let mut rest = plain.strip_prefix(BLOB_MAGIC).ok_or(Error::BadBlob)?;
 
         let mut take = || -> Result<Vec<u8>, Error> {
