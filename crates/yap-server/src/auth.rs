@@ -564,20 +564,44 @@ pub async fn reset_finish(
 
 // ---------- sessions ----------
 
-/// Resolve `Authorization: Bearer <token>` to an account id.
-pub async fn authenticate(st: &AppState, headers: &HeaderMap) -> ApiResult<Uuid> {
+/// A resolved login session.
+pub struct Session {
+    pub account: Uuid,
+    /// Set once the client has registered or attached a device.
+    pub device: Option<Uuid>,
+    pub token_hash: Vec<u8>,
+}
+
+/// Resolve a raw session token.
+pub async fn session_for_token(st: &AppState, token: &str) -> ApiResult<Session> {
+    let token_hash = hash_token(token)?;
+    let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT account_id, device_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&st.db)
+    .await?;
+    let (account, device) = row.ok_or(ApiError::Unauthorized)?;
+    Ok(Session {
+        account,
+        device,
+        token_hash,
+    })
+}
+
+/// Resolve `Authorization: Bearer <token>`.
+pub async fn session(st: &AppState, headers: &HeaderMap) -> ApiResult<Session> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(ApiError::Unauthorized)?;
-    sqlx::query_scalar(
-        "SELECT account_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
-    )
-    .bind(hash_token(token)?)
-    .fetch_optional(&st.db)
-    .await?
-    .ok_or(ApiError::Unauthorized)
+    session_for_token(st, token).await
+}
+
+/// Resolve `Authorization: Bearer <token>` to an account id.
+pub async fn authenticate(st: &AppState, headers: &HeaderMap) -> ApiResult<Uuid> {
+    Ok(session(st, headers).await?.account)
 }
 
 pub async fn me(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {

@@ -7,6 +7,8 @@ use serde_json::json;
 pub enum ApiError {
     BadRequest(&'static str),
     Unauthorized,
+    Forbidden(&'static str),
+    NotFound(&'static str),
     Conflict(&'static str),
     TooManyRequests,
     /// Details are deliberately not logged: they could contain identifiers.
@@ -18,6 +20,8 @@ impl IntoResponse for ApiError {
         let (status, msg) = match self {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
             ApiError::Internal(kind) => {

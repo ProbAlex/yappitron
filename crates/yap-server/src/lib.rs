@@ -1,12 +1,15 @@
 //! Yappitron gateway server.
 
 pub mod auth;
+pub mod chat;
 pub mod config;
 pub mod error;
+pub mod hub;
 pub mod limiter;
 pub mod mail;
 pub mod secrets;
 pub mod state;
+pub mod ws;
 
 use std::time::Duration;
 
@@ -38,7 +41,38 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/reset/start", post(auth::reset_start))
         .route("/api/v1/reset/finish", post(auth::reset_finish))
         .route("/api/v1/me", get(auth::me))
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .route("/api/v1/devices", post(chat::create_device))
+        .route("/api/v1/devices/attach", post(chat::attach_device))
+        .route(
+            "/api/v1/devices/me/key-packages",
+            axum::routing::put(chat::put_key_packages),
+        )
+        .route(
+            "/api/v1/devices/me/key-packages/count",
+            get(chat::key_package_count),
+        )
+        .route(
+            "/api/v1/users/{username}/key-packages",
+            post(chat::take_key_packages),
+        )
+        .route(
+            "/api/v1/conversations",
+            get(chat::list_conversations).post(chat::create_conversation),
+        )
+        .route("/api/v1/conversations/{id}/accept", post(chat::accept))
+        .route("/api/v1/conversations/{id}/decline", post(chat::decline))
+        .route(
+            "/api/v1/conversations/{id}/messages",
+            get(chat::get_messages).post(chat::post_message),
+        )
+        .route("/api/v1/conversations/{id}/ack", post(chat::ack))
+        .route("/api/v1/welcomes", get(chat::list_welcomes))
+        .route(
+            "/api/v1/welcomes/{id}",
+            axum::routing::delete(chat::delete_welcome),
+        )
+        .route("/ws", get(ws::ws_handler))
+        .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
 }
 

@@ -6,15 +6,17 @@ A self-hosted, end-to-end encrypted messenger with **live typing**: see what the
 - Rust backend in Docker, designed to scale across servers
 - End-to-end encryption (MLS), OPAQUE password login, no metadata logs
 
-> **Status: early development.** M0 (crypto spike) and the server half of M1 (accounts) are done; there is no client UI yet. Not audited. Do not use for high-risk communication.
+> **Status: early development.** The crypto core, accounts and the messaging server (message requests, encrypted log, live-typing relay) are built and tested; the Flutter app is in progress. Not audited. Do not use for high-risk communication.
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the design, [docs/API.md](docs/API.md) for the account API, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
+See [docs/DESIGN.md](docs/DESIGN.md) for the design, [docs/API.md](docs/API.md) for the server API, [docs/CORE_API.md](docs/CORE_API.md) for the client crypto boundary, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
 
 ## Layout
 
 ```
 crates/yap-proto    wire envelopes
 crates/yap-core     client core: MLS, OPAQUE client, typing frames (native + WASM)
+crates/yap-ffi      C ABI over the core (native Flutter platforms)
+crates/yap-wasm     wasm-bindgen binding over the core (browser)
 crates/yap-server   gateway server
 app/                Flutter app
 deploy/             Docker Compose (home) and HAProxy/WireGuard (VPS)

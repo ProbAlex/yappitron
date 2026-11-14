@@ -5,6 +5,7 @@ use opaque_ke::rand::rngs::OsRng;
 use sqlx::PgPool;
 use yap_proto::auth::{YapOpaque, opaque_ke};
 
+use crate::hub::Hub;
 use crate::limiter::RateLimiter;
 use crate::mail::Mailer;
 use crate::secrets::Secrets;
@@ -18,6 +19,8 @@ pub struct AppState {
     pub setup: Arc<Setup>,
     pub mailer: Arc<dyn Mailer>,
     pub limiter: Arc<RateLimiter>,
+    /// Live connections and the typing relay (in-process; becomes a bus across nodes).
+    pub hub: Arc<Hub>,
     /// Public hostname; the OPAQUE server identifier.
     pub domain: Arc<str>,
 }
@@ -37,6 +40,7 @@ impl AppState {
             setup: Arc::new(setup),
             mailer,
             limiter: Arc::new(RateLimiter::default()),
+            hub: Arc::new(Hub::default()),
             domain: domain.into(),
         })
     }
