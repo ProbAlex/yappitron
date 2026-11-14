@@ -1,0 +1,17 @@
+[package]
+name = "yap-ffi"
+description = "C ABI over yap-core for native Flutter platforms (Linux, Windows, macOS, Android, iOS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# This is the only crate allowed to use `unsafe` (FFI needs raw pointers). Keep it tiny.
+[lints.rust]
+unsafe_code = "allow"
+
+[dependencies]
+yap-core = { path = "../yap-core" }

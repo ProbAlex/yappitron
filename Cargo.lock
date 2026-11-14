@@ -3760,6 +3760,7 @@ dependencies = [
 name = "yap-core"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "opaque-ke",
@@ -3771,6 +3772,13 @@ dependencies = [
  "tls_codec 0.4.2",
  "wasm-bindgen-test",
  "yap-proto",
+]
+
+[[package]]
+name = "yap-ffi"
+version = "0.1.0"
+dependencies = [
+ "yap-core",
 ]
 
 [[package]]
@@ -3808,6 +3816,14 @@ dependencies = [
  "uuid",
  "yap-core",
  "yap-proto",
+]
+
+[[package]]
+name = "yap-wasm"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen",
+ "yap-core",
 ]
 
 [[package]]

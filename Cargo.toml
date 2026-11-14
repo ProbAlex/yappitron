@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/yap-proto", "crates/yap-core", "crates/yap-server"]
+members = ["crates/yap-proto", "crates/yap-core", "crates/yap-ffi", "crates/yap-wasm", "crates/yap-server"]
 
 [workspace.package]
 version = "0.1.0"
