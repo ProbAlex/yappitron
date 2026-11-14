@@ -25,10 +25,11 @@ All settings are environment variables (see `.env.example`). The ones that matte
 The gateway speaks plain HTTP (and WebSocket on `/ws`) and expects something in front of it to
 provide TLS. That proxy must:
 
-- **Set `X-Forwarded-For` to the real client address.** The gateway uses it only for in-memory
-  rate limits. If the header is missing, every visitor shares one rate-limit bucket (so a few
-  signups lock everyone out); if the proxy passes through a client-supplied value, limits can be
-  evaded.
+- **Append the real client address to `X-Forwarded-For`.** The gateway uses the LAST entry, only
+  for in-memory rate limits. If the header is missing, every visitor shares one rate-limit bucket
+  (so a few signups lock everyone out). If a Caddy sits between the VPS and the gateway, it
+  replaces the header with the tunnel's address unless told otherwise: use
+  `header_up X-Forwarded-For {http.request.header.X-Forwarded-For}` in the site block.
 - **Pass WebSocket upgrades** on `/ws` and allow long-lived connections (live typing and
   delivery run over it).
 - **Not log requests.** The server keeps no metadata logs; a proxy that does defeats that.

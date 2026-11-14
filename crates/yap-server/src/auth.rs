@@ -59,13 +59,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Client address for in-RAM rate limiting only. Caddy sets `X-Forwarded-For`.
+/// Client address for in-RAM rate limiting only (never stored or logged).
+///
+/// The gateway sits behind exactly one trusted proxy, which appends the address it saw to
+/// `X-Forwarded-For`. The LAST entry is therefore the real client; earlier entries are whatever
+/// the client claimed and can be forged to dodge per-address limits.
 fn client_ip(headers: &HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|s| s.trim().to_string())
+        .and_then(|v| v.rsplit(',').map(str::trim).find(|s| !s.is_empty()))
+        .map(str::to_string)
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -613,4 +617,38 @@ pub async fn me(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Jso
         .fetch_one(&st.db)
         .await?;
     Ok(Json(json!({ "username": name })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(xff: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = xff {
+            h.insert("x-forwarded-for", v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn client_ip_is_the_last_forwarded_entry() {
+        assert_eq!(client_ip(&headers(Some("203.0.113.9"))), "203.0.113.9");
+        // A forged first entry must not be trusted: the proxy appended the real one last.
+        assert_eq!(
+            client_ip(&headers(Some("6.6.6.6, 203.0.113.9"))),
+            "203.0.113.9"
+        );
+        assert_eq!(
+            client_ip(&headers(Some("6.6.6.6,  203.0.113.9 "))),
+            "203.0.113.9"
+        );
+        assert_eq!(client_ip(&headers(Some("203.0.113.9, "))), "203.0.113.9");
+    }
+
+    #[test]
+    fn missing_header_falls_back() {
+        assert_eq!(client_ip(&headers(None)), "unknown");
+        assert_eq!(client_ip(&headers(Some(""))), "unknown");
+    }
 }
