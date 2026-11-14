@@ -107,9 +107,12 @@ Future<void> showRecoveryEntryDialog(BuildContext context, YapApp app) async {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Enter the recovery key you saved when you created your account.\n\n'
-                'This device becomes your only device and your other devices are signed out. '
-                'Your old chats stay readable here, but to message someone again you start a new chat with them.'),
+            Text(app.needsHistoryKey
+                ? 'Enter the recovery key you saved when you created your account. It unlocks your '
+                    'message history on this device. Your other devices are not affected.'
+                : 'Enter the recovery key you saved when you created your account.\n\n'
+                    'This device becomes your only device and your other devices are signed out. '
+                    'Your old chats stay readable here, but to message someone again you start a new chat with them.'),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
@@ -133,7 +136,11 @@ Future<void> showRecoveryEntryDialog(BuildContext context, YapApp app) async {
                       error = null;
                     });
                     try {
-                      await app.recoverWithKey(controller.text);
+                      if (app.needsHistoryKey) {
+                        await app.restoreHistoryKey(controller.text);
+                      } else {
+                        await app.recoverWithKey(controller.text);
+                      }
                       if (context.mounted) Navigator.pop(context);
                     } on ApiException catch (e) {
                       setState(() {

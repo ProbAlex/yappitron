@@ -505,6 +505,70 @@ async fn revoking_a_device_signs_it_out_and_stops_handing_it_out() {
 }
 
 #[tokio::test]
+async fn account_keys_are_created_once_and_replaced_only_on_request() {
+    let Some(h) = harness().await else { return };
+    let alice = h.user("alice").await;
+    let tablet = h.add_device(&alice, "tablet").await;
+    let keys = |wrapped: &str, auth: u8, replace: bool| json!({"wrapped_hist_key": B64.encode(wrapped), "recovery_auth": B64.encode([auth; 32]), "replace": replace});
+
+    // No keys yet (an account from before the feature, or a brand-new one): the first device
+    // to try wins; a second device racing it gets 409 and must restore the key instead.
+    assert_eq!(
+        alice.get(&h, "/api/v1/account/keys").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        alice
+            .authed_put(&h, "/api/v1/account/keys", keys("first", 1, false))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        tablet
+            .authed_put(&h, "/api/v1/account/keys", keys("second", 2, false))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        alice.get(&h, "/api/v1/account/keys").await.1["wrapped_hist_key"],
+        B64.encode("first")
+    );
+
+    // Creating a new recovery key is an explicit replace.
+    assert_eq!(
+        tablet
+            .authed_put(&h, "/api/v1/account/keys", keys("third", 3, true))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        alice.get(&h, "/api/v1/account/keys").await.1["wrapped_hist_key"],
+        B64.encode("third")
+    );
+    // ...and the old recovery token no longer works, the new one does.
+    let fresh = h.add_pending_device(&alice, "fresh").await;
+    let (s, _) = fresh
+        .post(
+            &h,
+            "/api/v1/devices/me/recover",
+            json!({"recovery_auth": B64.encode([1u8; 32])}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = fresh
+        .post(
+            &h,
+            "/api/v1/devices/me/recover",
+            json!({"recovery_auth": B64.encode([3u8; 32])}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn the_recovery_key_restores_history_access_and_resets_devices() {
     let Some(h) = harness().await else { return };
     let (phone, _bob, conv) = chatting(&h).await;

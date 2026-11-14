@@ -23,6 +23,8 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     /// Public hostname; the OPAQUE server identifier.
     pub domain: Arc<str>,
+    /// How many emailed codes one address may request per hour (in-memory counters).
+    pub code_limit_per_ip: u32,
 }
 
 impl AppState {
@@ -42,7 +44,14 @@ impl AppState {
             limiter: Arc::new(RateLimiter::default()),
             hub: Arc::new(Hub::default()),
             domain: domain.into(),
+            code_limit_per_ip: 10,
         })
+    }
+
+    /// Override how many emailed codes one address may request per hour (default 10).
+    pub fn with_code_limit_per_ip(mut self, limit: u32) -> Self {
+        self.code_limit_per_ip = limit;
+        self
     }
 }
 

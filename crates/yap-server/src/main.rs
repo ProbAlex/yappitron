@@ -40,7 +40,9 @@ async fn run() -> Result<(), String> {
         (None, Some(smtp)) => Arc::new(SmtpMailer::new(smtp)?),
         (None, None) => unreachable!("Config::from_env requires one of them"),
     };
-    let state = AppState::new(db.clone(), &cfg.secret, &cfg.domain, mailer).await?;
+    let state = AppState::new(db.clone(), &cfg.secret, &cfg.domain, mailer)
+        .await?
+        .with_code_limit_per_ip(cfg.code_limit_per_ip);
     tokio::spawn(sweep_forever(db));
 
     let listener = tokio::net::TcpListener::bind(cfg.bind)

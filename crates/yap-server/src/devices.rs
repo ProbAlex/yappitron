@@ -590,6 +590,11 @@ pub struct PutAccountKeys {
     wrapped_hist_key: String,
     /// A 32-byte token derived from the recovery key. Only its hash is stored.
     recovery_auth: String,
+    /// Replace keys that already exist (creating a new recovery key). Without it the call only
+    /// creates them: of several devices that each try to initialize an account's keys, exactly
+    /// one wins and the rest get `409` (they must restore the key instead).
+    #[serde(default)]
+    replace: bool,
 }
 
 fn hash_auth(token: &[u8]) -> Vec<u8> {
@@ -610,16 +615,25 @@ pub async fn put_account_keys(
     if wrapped.is_empty() || wrapped.len() > 1024 || auth.len() != 32 {
         return Err(ApiError::BadRequest("invalid key material"));
     }
-    sqlx::query(
-        "INSERT INTO account_keys (account_id, wrapped_hist_key, recovery_auth_hash) VALUES ($1, $2, $3)
-         ON CONFLICT (account_id) DO UPDATE
-         SET wrapped_hist_key = EXCLUDED.wrapped_hist_key, recovery_auth_hash = EXCLUDED.recovery_auth_hash",
-    )
+    let conflict = if b.replace {
+        "ON CONFLICT (account_id) DO UPDATE
+         SET wrapped_hist_key = EXCLUDED.wrapped_hist_key, recovery_auth_hash = EXCLUDED.recovery_auth_hash"
+    } else {
+        "ON CONFLICT (account_id) DO NOTHING"
+    };
+    let done = sqlx::query(&format!(
+        "INSERT INTO account_keys (account_id, wrapped_hist_key, recovery_auth_hash) VALUES ($1, $2, $3) {conflict}"
+    ))
     .bind(me.account)
     .bind(wrapped)
     .bind(hash_auth(&auth))
     .execute(&st.db)
     .await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::Conflict(
+            "this account already has a recovery key",
+        ));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

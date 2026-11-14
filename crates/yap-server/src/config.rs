@@ -25,6 +25,8 @@ pub struct Config {
     /// and local runs can read verification codes. Never set this in production: it writes
     /// recipient addresses and codes to disk.
     pub dev_mail_file: Option<std::path::PathBuf>,
+    /// Emailed codes one client address may request per hour (`YAP_CODE_LIMIT_PER_IP`, default 10).
+    pub code_limit_per_ip: u32,
     /// If set, the gateway also serves the built Flutter web app from this directory. Production
     /// uses Caddy for that; this is for local development and end-to-end tests.
     pub web_dir: Option<std::path::PathBuf>,
@@ -69,6 +71,10 @@ impl Config {
             secret,
             smtp,
             dev_mail_file,
+            code_limit_per_ip: std::env::var("YAP_CODE_LIMIT_PER_IP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
             web_dir: std::env::var("YAP_WEB_DIR").ok().map(Into::into),
         })
     }

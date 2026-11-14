@@ -29,6 +29,16 @@ import 'package:yappitron/src/state/recovery_key.dart';
 final server = Platform.environment['YAP_E2E_SERVER'];
 final mailFile = Platform.environment['YAP_E2E_MAIL_FILE'];
 final resendKey = Platform.environment['YAP_E2E_RESEND_KEY'];
+
+/// The throwaway Postgres container the local runner started (tests that simulate an older
+/// account tamper with the database). Null when running against a deployed server.
+final pgContainer = Platform.environment['YAP_E2E_PG'];
+
+Future<String> sql(String statement) async {
+  final r = await Process.run('docker', ['exec', pgContainer!, 'psql', '-U', 'postgres', '-d', 'yape2e', '-Atc', statement]);
+  if (r.exitCode != 0) fail('sql failed: ${r.stderr}');
+  return (r.stdout as String).trim();
+}
 const password = 'correct horse battery staple';
 
 /// Poll until [check] is true.
@@ -44,6 +54,15 @@ Future<void> eventually(bool Function() check, {String? what, int seconds = 15})
 final _usedCodes = <String, Set<String>>{};
 
 String _emailFor(String name) => resendKey != null ? 'delivered+$name@resend.dev' : '$name@example.test';
+
+/// Like [eventually], for a check that has to await something (a database query).
+Future<void> eventuallyAsync(Future<bool> Function() check, {String? what, int seconds = 15}) async {
+  final deadline = DateTime.now().add(Duration(seconds: seconds));
+  while (!await check()) {
+    if (DateTime.now().isAfter(deadline)) fail('timed out waiting for ${what ?? 'condition'}');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+}
 
 Future<String> codeFor(String email) async {
   final used = _usedCodes.putIfAbsent(email, () => {});
@@ -235,6 +254,77 @@ void main() {
         restored.dispose();
         bob.dispose();
       }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
+
+  test('an account from before the history key existed is upgraded on its first start, and its history is backed up',
+      () => diagnosing(() async {
+        final (alice, store, aliceName) = await signUp('alice');
+        final (bob, _, bobName) = await signUp('bob');
+        final convId = await alice.startConversation(bobName);
+        await eventually(() => bob.conversation(convId) != null);
+        await bob.accept(bob.conversation(convId)!);
+        await alice.send(alice.conversation(convId)!, 'written before the upgrade');
+        await eventually(() => bob.conversation(convId)!.messages.length == 1);
+        await bob.send(bob.conversation(convId)!, 'answer before the upgrade');
+        await eventually(() => alice.conversation(convId)!.messages.length == 2);
+        alice.recoveryKeyShown();
+        alice.dispose();
+
+        // Turn the clock back: no recovery key or archive on the server, no history key on the
+        // device, nothing backed up. This is exactly how an existing account looks.
+        await sql('DELETE FROM account_keys');
+        await sql('DELETE FROM archive');
+        await store.deleteSecret('hist.$aliceName');
+        await store.delete('archived.$aliceName');
+
+        // The app starts: it must NOT lock the person out asking for a recovery key that never
+        // existed. It creates the keys, shows the recovery key, and backs up the old messages.
+        final restarted = YapApp(core: core, store: store, serverUrl: server!, deviceLabel: 'Test device')
+          // ignore: avoid_print
+          ..onBackgroundError = (e, st) => print('[restarted] background error: $e\n$st');
+        await restarted.boot();
+        expect(restarted.phase, Phase.signedIn, reason: 'an existing account stays usable');
+        expect(restarted.needsHistoryKey, isFalse);
+        expect(restarted.recoveryKeyToShow, isNotNull, reason: 'it is offered a recovery key now');
+        expect(restarted.conversation(convId)!.messages.map((m) => m.text), ['written before the upgrade', 'answer before the upgrade']);
+        await eventuallyAsync(() async => await sql('SELECT count(*) FROM archive') == '2', what: 'local history to be archived');
+
+        // A device added afterwards therefore sees the history from before the upgrade.
+        final laptop = YapApp(core: core, store: MemoryStore(), serverUrl: server!, deviceLabel: 'Laptop');
+        await laptop.login(aliceName, password);
+        await eventually(() => restarted.pendingLinks.isNotEmpty, what: 'the approval request');
+        await restarted.approve(await restarted.prepareApproval(restarted.pendingLinks.first));
+        await eventually(() => laptop.conversation(convId)?.messages.length == 2, what: 'history on the new device');
+        expect(laptop.conversation(convId)!.messages.map((m) => m.text), ['written before the upgrade', 'answer before the upgrade']);
+
+        laptop.dispose();
+        restarted.dispose();
+        bob.dispose();
+      }), skip: skip ?? (pgContainer == null ? 'needs the local runner (YAP_E2E_PG)' : null), timeout: const Timeout(Duration(seconds: 90)));
+
+  test('a device that lost its history key restores it from the recovery key without signing anything out',
+      () => diagnosing(() async {
+        final (alice, store, aliceName) = await signUp('alice');
+        final recoveryText = alice.recoveryKeyToShow!;
+        alice.recoveryKeyShown();
+        alice.dispose();
+
+        // The device's secure storage was wiped: signed in and approved, but no history key.
+        await store.deleteSecret('hist.$aliceName');
+        final app = YapApp(core: core, store: store, serverUrl: server!, deviceLabel: 'Test device');
+        await app.boot();
+        expect(app.phase, Phase.awaitingApproval);
+        expect(app.needsHistoryKey, isTrue);
+
+        await expectLater(app.restoreHistoryKey('nonsense'), throwsA(isA<ApiException>()));
+        await expectLater(app.restoreHistoryKey(encodeRecoveryKey(Uint8List(32))), throwsA(isA<ApiException>()),
+            reason: 'a well-formed but wrong key is refused');
+        expect(app.phase, Phase.awaitingApproval);
+        await app.restoreHistoryKey(recoveryText);
+        expect(app.phase, Phase.signedIn);
+        expect((await app.listDevices()).where((d) => d.status == 'approved').length, 1,
+            reason: 'restoring the key signs no device out');
+        app.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 60)));
 
   test('a second device is approved, gets the history, works alongside the first; the recovery key rescues a lost account',
       () => diagnosing(() async {

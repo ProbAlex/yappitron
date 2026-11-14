@@ -58,15 +58,25 @@ async function codeFor(to: string): Promise<string> {
  */
 async function fill(page: Page, name: string | RegExp, text: string) {
   const field = page.getByRole('textbox', { name, exact: typeof name === 'string' });
-  for (let attempt = 0; attempt < 5; attempt++) {
+  await field.waitFor();
+  // A field that appears with `autofocus` takes focus by itself, and Flutter then attaches its
+  // text-input connection a moment later, resetting the DOM input to its own (empty) state.
+  // Typing during that window is lost. So: let autofocus finish, otherwise focus it ourselves,
+  // then give Flutter a beat to attach before typing.
+  try {
+    await expect(field).toBeFocused({ timeout: 1500 });
+  } catch {
     await field.click();
     await expect(field).toBeFocused();
+  }
+  await page.waitForTimeout(400);
+  for (let attempt = 0; attempt < 5; attempt++) {
     await page.keyboard.press('Control+A');
     await page.keyboard.type(text, { delay: 8 });
-    // Flutter can finish attaching its text input just AFTER we typed and reset the field to
-    // its own (empty) state. Only trust the value once it has survived a short settle.
     await page.waitForTimeout(300);
     if ((await field.inputValue().catch(() => text)) === text) return;
+    await field.click();
+    await page.waitForTimeout(400);
   }
   throw new Error(`could not type into "${name}"`);
 }
@@ -86,6 +96,11 @@ async function signup(page: Page, username: string) {
   await fill(page, 'Password', PASSWORD);
   await fill(page, 'Repeat password', PASSWORD);
   await button(page, 'Create account').click();
+  // The first device of a new account is shown its recovery key exactly once and must confirm it
+  // was saved before going on.
+  await expect(page.getByText('Save your recovery key').first()).toBeVisible();
+  await page.getByRole('checkbox', { name: 'I have saved my recovery key' }).click();
+  await button(page, 'Continue').click();
   // Signed in: the home screen shows the empty state.
   await expect(page.getByText('No conversations yet').first()).toBeVisible();
 }

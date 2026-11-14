@@ -260,6 +260,22 @@ class YapApp extends ChangeNotifier {
     await _loadPendingLinks();
     final sync = _enqueue(_refresh);
     if (waitForSync) await sync;
+    unawaited(_backfillArchive());
+  }
+
+  /// Once per installation, upload everything this device already holds to the archive
+  /// (idempotent), so devices added later can read history written before the archive existed.
+  Future<void> _backfillArchive() async {
+    final name = username;
+    if (name == null || _histKey == null || await store.getString('archived.$name') != null) return;
+    for (final c in _convs.values) {
+      if (c.stale) continue;
+      for (final m in c.messages) {
+        _archiveQueue.add((conv: c.id, message: m));
+      }
+    }
+    await _flushArchive();
+    if (_archiveQueue.isEmpty) await store.putString('archived.$name', '1');
   }
 
   Future<void> _teardownSession() async {
@@ -305,6 +321,7 @@ class YapApp extends ChangeNotifier {
         final status = await api.attachDevice(savedId);
         _deviceState = status == 'approved' ? DeviceState.approved : DeviceState.pending;
         await _loadHistoryKey(name);
+        if (_deviceState == DeviceState.approved) await _ensureHistoryKey(name);
         return;
       } on ApiException catch (e) {
         // 403: removed from the account. 404: the server no longer knows it. Either way the
@@ -320,14 +337,25 @@ class YapApp extends ChangeNotifier {
     _deviceState = created.status == 'approved' ? DeviceState.approved : DeviceState.pending;
     await store.putString('deviceid.$name', _deviceId!);
     await _saveDevice();
-    if (_deviceState == DeviceState.approved) await _initFirstDevice(name);
+    if (_deviceState == DeviceState.approved) await _ensureHistoryKey(name);
   }
 
-  /// The first device of a new account creates the account's history key and a recovery key.
-  Future<void> _initFirstDevice(String name) async {
+  /// An approved device needs the account's history key. Normally it already has it. If not:
+  /// when the server has no recovery key for the account yet (a brand-new account, or one that
+  /// predates this feature) this device creates the key and a recovery key; if the server does
+  /// have one, the key was lost here and must be restored from the recovery key.
+  Future<void> _ensureHistoryKey(String name) async {
+    if (_histKey != null) return;
+    if (await api.accountKeys() != null) return; // exists elsewhere: needsHistoryKey
     _histKey = randomBytes(32);
+    try {
+      await _issueRecoveryKey(replace: false);
+    } on ApiException catch (e) {
+      _histKey = null;
+      if (e.status == 409) return; // another device created it a moment ago: restore from it
+      rethrow;
+    }
     await store.putSecret('hist.$name', base64.encode(_histKey!));
-    await _issueRecoveryKey();
   }
 
   Future<void> _loadHistoryKey(String name) async {
@@ -352,7 +380,7 @@ class YapApp extends ChangeNotifier {
         // Unreadable already; nothing more to find.
       }
     }
-    for (final k in ['device.$name', 'deviceid.$name', 'convs.$name']) {
+    for (final k in ['device.$name', 'deviceid.$name', 'convs.$name', 'archived.$name']) {
       await store.delete(k);
     }
     for (final s in ['hist.$name', 'link.$name']) {
@@ -465,12 +493,14 @@ class YapApp extends ChangeNotifier {
     await _issueRecoveryKey();
   }
 
-  /// Create a new recovery key (wrapping the current history key) and queue it for display.
-  Future<void> _issueRecoveryKey() async {
+  /// Create a recovery key (wrapping the current history key) and queue it for display.
+  /// [replace]: replace the account's existing recovery key (otherwise only create the first).
+  Future<void> _issueRecoveryKey({bool replace = true}) async {
     final key = randomBytes(32);
     await api.putAccountKeys(
       wrappedHistoryKey: core.vaultSeal(key, 'hist-key', _histKey!),
       recoveryAuth: core.deriveKey(key, _recoveryAuthLabel),
+      replace: replace,
     );
     recoveryKeyToShow = encodeRecoveryKey(key);
     notifyListeners();
@@ -478,6 +508,24 @@ class YapApp extends ChangeNotifier {
 
   /// For the Devices screen: replace the recovery key.
   Future<void> createNewRecoveryKey() => _issueRecoveryKey();
+
+  /// This (approved) device lost the account's history key: get it back from the recovery key.
+  /// Unlike [recoverWithKey] this signs nothing out.
+  Future<void> restoreHistoryKey(String text) async {
+    final key = decodeRecoveryKey(text);
+    if (key == null) {
+      throw ApiException(0, 'That is not a recovery key. It is 52 letters and digits in groups of four.');
+    }
+    final wrapped = await api.accountKeys();
+    if (wrapped == null) throw ApiException(404, 'This account has no recovery key.');
+    try {
+      _histKey = core.vaultOpen(key, 'hist-key', wrapped);
+    } on CoreException {
+      throw ApiException(0, 'That recovery key does not match this account.');
+    }
+    await store.putSecret('hist.$username', base64.encode(_histKey!));
+    await _becomeActive();
+  }
 
   /// The UI has displayed the recovery key to the person; forget it.
   void recoveryKeyShown() {

@@ -252,11 +252,25 @@ class ApiClient {
     ];
   }
 
-  Future<void> putAccountKeys({required Uint8List wrappedHistoryKey, required Uint8List recoveryAuth}) =>
+  /// Store the history key wrapped under the recovery key. Without [replace] this only creates
+  /// the keys (409 if they already exist); with it, an existing recovery key is replaced.
+  Future<void> putAccountKeys(
+          {required Uint8List wrappedHistoryKey, required Uint8List recoveryAuth, bool replace = false}) =>
       _send('PUT', '/api/v1/account/keys', {
         'wrapped_hist_key': b64e(wrappedHistoryKey),
         'recovery_auth': b64e(recoveryAuth),
+        'replace': replace,
       });
+
+  /// The history key wrapped under the recovery key, or null if the account has none yet.
+  Future<Uint8List?> accountKeys() async {
+    try {
+      return b64d((await _send('GET', '/api/v1/account/keys'))['wrapped_hist_key'] as String);
+    } on ApiException catch (e) {
+      if (e.status == 404) return null;
+      rethrow;
+    }
+  }
 
   /// Prove possession of the recovery key. On success this device becomes the account's only
   /// approved device and the wrapped history key comes back.

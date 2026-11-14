@@ -123,9 +123,11 @@ async fn request_code(
     let email_hmac = st.secrets.email_hmac(&email);
 
     let ip = client_ip(headers);
-    let per_ip = st
-        .limiter
-        .allow(&format!("code-ip:{ip}"), 10, Duration::from_secs(3600));
+    let per_ip = st.limiter.allow(
+        &format!("code-ip:{ip}"),
+        st.code_limit_per_ip,
+        Duration::from_secs(3600),
+    );
     let per_email = st.limiter.allow(
         &format!("code-email:{}", hex(&email_hmac)),
         3,

@@ -29,11 +29,14 @@ until docker exec "$PG" pg_isready -U postgres -d yape2e >/dev/null 2>&1; do sle
 
 cargo build -p yap-server
 # The server's domain must equal the host the browser uses: OPAQUE binds it into the login.
+# YAP_CODE_LIMIT_PER_IP is raised because the whole suite signs up more accounts per hour from one
+# address than the default of 10 allows.
 DATABASE_URL=postgres://postgres:e2e@127.0.0.1:54330/yape2e \
 YAP_BIND=127.0.0.1:$PORT \
 YAP_DOMAIN=127.0.0.1 \
 YAP_SERVER_SECRET=$(openssl rand -base64 48) \
 YAP_DEV_MAIL_FILE="$MAIL" \
+YAP_CODE_LIMIT_PER_IP=1000 \
 YAP_WEB_DIR="$ROOT/app/build/web" \
 RUST_LOG=warn \
   ./target/debug/yap-server >"$WORK/gateway.log" 2>&1 &
@@ -50,7 +53,7 @@ if [ "${E2E_ONLY:-all}" != web ]; then
   # The same flows, driven through the Dart app logic on the VM with the real Rust core over FFI.
   command -v flutter >/dev/null || export PATH="$HOME/dev/flutter/bin:$PATH"
   cargo build -p yap-ffi
-  (cd app && YAP_E2E_SERVER="http://127.0.0.1:$PORT" YAP_E2E_MAIL_FILE="$MAIL" \
+  (cd app && YAP_E2E_SERVER="http://127.0.0.1:$PORT" YAP_E2E_MAIL_FILE="$MAIL" YAP_E2E_PG="$PG" \
     YAP_NATIVE_LIB="$ROOT/target/debug/libyap_ffi.so" flutter test test/e2e_native_test.dart) || STATUS=1
 fi
 if [ $STATUS -ne 0 ]; then echo "--- gateway log ---"; cat "$WORK/gateway.log"; fi
