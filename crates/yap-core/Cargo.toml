@@ -1,0 +1,30 @@
+[package]
+name = "yap-core"
+description = "Yappitron client core: MLS, OPAQUE client, typing frames (sans-IO, native + WASM)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openmls = "0.9"
+openmls_rust_crypto = "0.6"
+openmls_basic_credential = "0.6"
+openmls_traits = "0.6"
+tls_codec = "0.4"
+yap-proto = { path = "../yap-proto" }
+
+opaque-ke = { version = "4", features = ["argon2"] }
+rand = "0.8"
+
+# Browser (WASM) builds need explicit randomness backends for each getrandom major version in the tree.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

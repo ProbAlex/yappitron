@@ -1,0 +1,48 @@
+{
+	admin off
+
+	servers {
+		listener_wrappers {
+			# HAProxy on the VPS sends the real client address (PROXY protocol v2) so rate
+			# limiting can work per IP. Only the WireGuard subnet may speak PROXY protocol.
+			proxy_protocol {
+				timeout 2s
+				allow 10.77.0.0/24
+			}
+			tls
+		}
+	}
+}
+
+{$YAP_DOMAIN} {
+	# NO access log directive: Caddy does not log requests by default. Do not add one.
+
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Everything is self-hosted (CanvasKit and fonts are bundled), so no third-party origins.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss://{$YAP_DOMAIN}; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy gateway:8080
+	}
+
+	handle /ws {
+		reverse_proxy gateway:8080
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

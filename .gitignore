@@ -1,0 +1,29 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Secrets and local config: NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.age
+secrets/
+
+# Flutter / Dart
+app/.dart_tool/
+app/build/
+app/.flutter-plugins*
+app/.packages
+app/pubspec.lock.bak
+
+# Editors / OS
+.idea/
+*.swp
+.DS_Store
+
+# Local data
+/data/
+*.sqlite
+*.log
