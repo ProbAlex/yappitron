@@ -91,6 +91,7 @@ class _ChatScreenState extends State<ChatScreen> {
           body: Column(
             children: [
               if (c.state == ConversationState.invited) _RequestBanner(app: app, conversation: c),
+              if (c.stale) _StaleBanner(app: app, conversation: c),
               if (c.state == ConversationState.declined)
                 const MaterialBanner(
                   content: Text('This person declined your message request.'),
@@ -105,8 +106,12 @@ class _ChatScreenState extends State<ChatScreen> {
               _Composer(
                 controller: _text,
                 focus: _focus,
-                enabled: c.state == ConversationState.joined,
-                hint: c.state == ConversationState.invited ? 'Accept the request to reply' : 'Message ${c.peer}',
+                enabled: c.state == ConversationState.joined && !c.stale,
+                hint: c.stale
+                    ? 'Read-only'
+                    : c.state == ConversationState.invited
+                        ? 'Accept the request to reply'
+                        : 'Message ${c.peer}',
                 onChanged: (v) => app.onDraftChanged(c, v),
                 onSend: () => _send(c),
               ),
@@ -116,6 +121,31 @@ class _ChatScreenState extends State<ChatScreen> {
       },
     );
   }
+}
+
+/// This device is not part of the chat's encryption any more (the account's keys were reset).
+class _StaleBanner extends StatelessWidget {
+  const _StaleBanner({required this.app, required this.conversation});
+  final YapApp app;
+  final Conversation conversation;
+
+  @override
+  Widget build(BuildContext context) => MaterialBanner(
+        content: Text('Your encryption keys were reset, so this chat is read-only here. '
+            'Start a new chat with ${conversation.peer} to talk again.'),
+        actions: [
+          FilledButton(
+            onPressed: () async {
+              try {
+                await app.startConversation(conversation.peer);
+              } on ApiException catch (e) {
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+              }
+            },
+            child: const Text('Start a new chat'),
+          ),
+        ],
+      );
 }
 
 class _RequestBanner extends StatelessWidget {

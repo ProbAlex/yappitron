@@ -55,3 +55,15 @@ pub fn open(key: &[u8; 32], context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Op
         )
         .map_err(|_| OpenError)
 }
+
+/// Derive a 32-byte key from a secret and a purpose label (HKDF-SHA256). Different labels give
+/// unrelated keys, so one secret (the recovery key) can serve several purposes safely.
+pub fn derive_key(secret: &[u8], label: &[u8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    let mut out = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(b"yappitron derive v1"), secret)
+        .expand(label, &mut out)
+        .expect("32 bytes is a valid HKDF length");
+    out
+}

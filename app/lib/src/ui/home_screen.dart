@@ -6,6 +6,8 @@ import '../api/realtime.dart';
 import '../state/app_state.dart';
 import '../state/models.dart';
 import 'chat_screen.dart';
+import 'devices_screen.dart';
+import 'link_screen.dart';
 import 'format.dart';
 
 const _wideBreakpoint = 820.0;
@@ -20,6 +22,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   String? _selected;
+  bool _recoveryDialogOpen = false;
 
   YapApp get app => widget.app;
 
@@ -28,6 +31,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return ListenableBuilder(
       listenable: app,
       builder: (context, _) {
+        // The recovery key is shown exactly once, right after it is created.
+        final key = app.recoveryKeyToShow;
+        if (key != null && !_recoveryDialogOpen) {
+          _recoveryDialogOpen = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) async {
+            if (mounted) await showRecoveryKeyDialog(context, app, key);
+            _recoveryDialogOpen = false;
+          });
+        }
         final wide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
         final list = _ConversationList(
           app: app,
@@ -113,10 +125,20 @@ class _ConversationList extends StatelessWidget {
           _LinkDot(status: app.link),
           PopupMenuButton<String>(
             tooltip: 'Account',
-            onSelected: (v) async {
-              if (v == 'logout') await app.logout();
+            icon: Badge(isLabelVisible: app.pendingLinks.isNotEmpty, child: const Icon(Icons.more_vert)),
+            onSelected: (v) {
+              if (v == 'logout') app.logout();
+              if (v == 'devices') {
+                Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => DevicesScreen(app: app)));
+              }
             },
-            itemBuilder: (_) => const [PopupMenuItem(value: 'logout', child: Text('Log out'))],
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'devices',
+                child: Text(app.pendingLinks.isEmpty ? 'Devices' : 'Devices (${app.pendingLinks.length} waiting)'),
+              ),
+              const PopupMenuItem(value: 'logout', child: Text('Log out')),
+            ],
           ),
         ],
       ),
@@ -126,10 +148,15 @@ class _ConversationList extends StatelessWidget {
         label: const Text('New chat'),
       ),
       body: items.isEmpty
-          ? const _EmptyState()
+          ? ListView(children: [
+              for (final l in app.pendingLinks) _NewDeviceBanner(app: app, link: l),
+              const SizedBox(height: 40),
+              const _EmptyState(),
+            ])
           : ListView(
               padding: const EdgeInsets.only(bottom: 88),
               children: [
+                for (final l in app.pendingLinks) _NewDeviceBanner(app: app, link: l),
                 if (requests.isNotEmpty) ...[
                   const _SectionHeader('Message requests'),
                   for (final c in requests) _RequestTile(app: app, conversation: c, onOpen: () => onOpen(c)),
@@ -141,6 +168,25 @@ class _ConversationList extends StatelessWidget {
             ),
     );
   }
+}
+
+/// A new device of this account is waiting to be approved.
+class _NewDeviceBanner extends StatelessWidget {
+  const _NewDeviceBanner({required this.app, required this.link});
+  final YapApp app;
+  final PendingLink link;
+
+  @override
+  Widget build(BuildContext context) => Card(
+        margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+        color: Theme.of(context).colorScheme.primaryContainer,
+        child: ListTile(
+          leading: const Icon(Icons.devices_other),
+          title: Text('New device: "${link.name}"'),
+          subtitle: const Text('Wants to join your account'),
+          trailing: FilledButton(onPressed: () => showApprovalDialog(context, app, link), child: const Text('Review')),
+        ),
+      );
 }
 
 class _EmptyState extends StatelessWidget {
@@ -200,7 +246,9 @@ class _ChatTile extends StatelessWidget {
         ? 'typing: ${c.liveDraft}'
         : c.state == ConversationState.declined
             ? 'Declined'
-            : (c.last == null ? 'No messages yet' : '${c.last!.mine ? 'You: ' : ''}${c.last!.text}');
+            : c.stale && c.last == null
+                ? 'Read-only'
+                : (c.last == null ? 'No messages yet' : '${c.last!.mine ? 'You: ' : ''}${c.last!.text}');
     return ListTile(
       selected: selected,
       leading: _Avatar(c.peer),

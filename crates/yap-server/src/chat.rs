@@ -198,7 +198,8 @@ pub async fn key_package_count(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    let me = caller(&st, &headers).await?;
+    // A pending device tops up its key packages too (approvers use one per conversation).
+    let (me, _) = caller_any(&st, &headers).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM key_packages WHERE device_id = $1")
         .bind(me.device)
         .fetch_one(&st.db)

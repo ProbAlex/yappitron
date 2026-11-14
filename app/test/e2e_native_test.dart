@@ -14,6 +14,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yappitron/src/api/api_client.dart';
@@ -23,6 +24,7 @@ import 'package:yappitron/src/core/yap_core.dart';
 import 'package:yappitron/src/data/local_store.dart';
 import 'package:yappitron/src/state/app_state.dart';
 import 'package:yappitron/src/state/models.dart';
+import 'package:yappitron/src/state/recovery_key.dart';
 
 final server = Platform.environment['YAP_E2E_SERVER'];
 final mailFile = Platform.environment['YAP_E2E_MAIL_FILE'];
@@ -200,6 +202,121 @@ void main() {
     alice2.dispose();
     bob.dispose();
   }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
+
+  test('a second device is approved, gets the history, works alongside the first; the recovery key rescues a lost account',
+      () => diagnosing(() async {
+        final (alice1, _, aliceName) = await signUp('alice');
+        final (bob, _, bobName) = await signUp('bob');
+
+        // The account's first device produces the recovery key, exactly once.
+        final recoveryText = alice1.recoveryKeyToShow!;
+        expect(decodeRecoveryKey(recoveryText), isNotNull);
+        alice1.recoveryKeyShown();
+        expect(alice1.recoveryKeyToShow, isNull);
+
+        // History from before any second device exists.
+        final convId = await alice1.startConversation(bobName);
+        await eventually(() => bob.conversation(convId) != null, what: 'Bob to receive the request');
+        await bob.accept(bob.conversation(convId)!);
+        await alice1.send(alice1.conversation(convId)!, 'history one');
+        await eventually(() => bob.conversation(convId)!.messages.length == 1);
+        await bob.send(bob.conversation(convId)!, 'history two');
+        await eventually(() => alice1.conversation(convId)!.messages.length == 2);
+
+        // A new device signs in: it is not the first, so it waits, powerless.
+        final store2 = MemoryStore();
+        var alice2 = YapApp(core: core, store: store2, serverUrl: server!, deviceLabel: 'Laptop')
+          // ignore: avoid_print
+          ..onBackgroundError = (e, st) => print('[alice2] background error: $e\n$st');
+        await alice2.login(aliceName, password);
+        expect(alice2.phase, Phase.awaitingApproval);
+        expect(alice2.recoveryKeyToShow, isNull, reason: 'only the first device creates one');
+        expect(alice2.conversations, isEmpty, reason: 'it cannot read anything yet');
+        final code = alice2.linkFingerprint!;
+        expect(RegExp(r'^[0-9A-F]{4}(-[0-9A-F]{4}){4}$').hasMatch(code), isTrue, reason: code);
+
+        // The app is closed and reopened while waiting: same code, still waiting.
+        alice2.dispose();
+        alice2 = YapApp(core: core, store: store2, serverUrl: server!, deviceLabel: 'Laptop')
+          // ignore: avoid_print
+          ..onBackgroundError = (e, st) => print('[alice2] background error: $e\n$st');
+        await alice2.boot();
+        expect(alice2.phase, Phase.awaitingApproval);
+        expect(alice2.linkFingerprint, code, reason: 'the link key survives a restart');
+
+        // The first device is told, the person compares the codes, and approves.
+        await eventually(() => alice1.pendingLinks.isNotEmpty, what: 'the approval request to reach device 1');
+        final preview = await alice1.prepareApproval(alice1.pendingLinks.first);
+        expect(preview.fingerprint, code, reason: 'both screens must show the same code');
+        await alice1.approve(preview);
+        expect(alice1.pendingLinks, isEmpty);
+        await eventually(() => alice2.phase == Phase.signedIn, what: 'the new device to be approved');
+
+        // It has the conversation and the history written before it existed.
+        await eventually(() => alice2.conversation(convId)?.messages.length == 2, what: 'history on the new device');
+        final c2 = alice2.conversation(convId)!;
+        expect(c2.stale, isFalse);
+        expect([for (final m in c2.messages) (m.text, m.mine)], [('history one', true), ('history two', false)]);
+
+        // It can talk. Both of Alice's devices see her messages as hers; Bob sees them as hers too.
+        await alice2.send(c2, 'from the laptop');
+        await eventually(() => bob.conversation(convId)!.messages.length == 3, what: 'Bob to get the laptop message');
+        expect(bob.conversation(convId)!.messages.last.text, 'from the laptop');
+        expect(bob.conversation(convId)!.messages.last.mine, isFalse);
+        await eventually(() => alice1.conversation(convId)!.messages.length == 3, what: 'device 1 to see it');
+        expect(alice1.conversation(convId)!.messages.last.text, 'from the laptop');
+        expect(alice1.conversation(convId)!.messages.last.mine, isTrue, reason: 'written by Alice on another device');
+
+        // Replies reach both devices.
+        await bob.send(bob.conversation(convId)!, 'reply to both');
+        await eventually(() => alice1.conversation(convId)!.messages.length == 4 && c2.messages.length == 4, what: 'both devices');
+        expect(c2.messages.last.text, 'reply to both');
+
+        // Live typing from the new device reaches Bob: it is a real member of the group.
+        alice2.onDraftChanged(c2, 'typing on the laptop');
+        await eventually(() => bob.conversation(convId)!.liveDraft == 'typing on the laptop', what: 'live typing from device 2');
+        alice2.clearDraft(c2);
+
+        // Removing the second device signs it out and wipes it.
+        final other = (await alice1.listDevices()).firstWhere((d) => !d.current);
+        await alice1.removeDevice(other.id);
+        await eventually(() => alice2.phase == Phase.signedOut, what: 'the removed device to be signed out');
+        expect(alice2.notice, contains('removed'));
+        expect(alice2.conversations, isEmpty);
+        alice2.dispose();
+
+        // Everything lost: a fresh device with only the password and the recovery key.
+        final alice3 = YapApp(core: core, store: MemoryStore(), serverUrl: server!, deviceLabel: 'Replacement')
+          // ignore: avoid_print
+          ..onBackgroundError = (e, st) => print('[alice3] background error: $e\n$st');
+        await alice3.login(aliceName, password);
+        expect(alice3.phase, Phase.awaitingApproval);
+        await expectLater(alice3.recoverWithKey('not a key'), throwsA(isA<ApiException>()));
+        await expectLater(alice3.recoverWithKey(encodeRecoveryKey(Uint8List(32))), throwsA(isA<ApiException>()),
+            reason: 'a well-formed but wrong key is refused');
+        expect(alice3.phase, Phase.awaitingApproval);
+        await alice3.recoverWithKey(recoveryText);
+        expect(alice3.phase, Phase.signedIn);
+        expect(alice3.recoveryKeyToShow, isNotNull, reason: 'a fresh recovery key replaces the used one');
+        expect(alice3.recoveryKeyToShow, isNot(recoveryText));
+        await eventually(() => alice1.phase == Phase.signedOut, what: 'device 1 to be signed out by the recovery');
+
+        // The old chat is readable but read-only; a new chat works.
+        await eventually(() => alice3.conversation(convId)?.messages.length == 4, what: 'history from the archive');
+        final old = alice3.conversation(convId)!;
+        expect(old.stale, isTrue);
+        expect([for (final m in old.messages) m.text], ['history one', 'history two', 'from the laptop', 'reply to both']);
+        await expectLater(alice3.send(old, 'nope'), throwsA(isA<ApiException>()));
+        final fresh = await alice3.startConversation(bobName);
+        expect(fresh, isNot(convId));
+        await eventually(() => bob.conversation(fresh) != null, what: 'Bob to get the new request');
+        await alice3.send(alice3.conversation(fresh)!, 'back again');
+        await eventually(() => bob.conversation(fresh)!.messages.length == 1);
+        expect(bob.conversation(fresh)!.messages.single.text, 'back again');
+
+        alice3.dispose();
+        bob.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 150)));
 
   test('wrong password and unknown user are refused; password reset works', () => diagnosing(() async {
     final (app, _, name) = await signUp('carol');

@@ -24,6 +24,21 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+class DeviceDto {
+  DeviceDto({required this.id, required this.name, required this.status, required this.current});
+  final String id;
+  final String name;
+  final String status;
+  final bool current;
+}
+
+class PendingDeviceDto {
+  PendingDeviceDto({required this.id, required this.name, required this.linkPub});
+  final String id;
+  final String name;
+  final Uint8List linkPub;
+}
+
 class WelcomeDto {
   WelcomeDto({required this.id, required this.conversationId, required this.joinSeq, required this.data});
   final int id;
@@ -149,10 +164,104 @@ class ApiClient {
 
   // ----- devices -----
 
-  Future<String> createDevice(String name) async =>
-      (await _send('POST', '/api/v1/devices', {'name': name}))['device_id'] as String;
+  /// Register this installation. The account's first device is `approved` straight away; later
+  /// ones are `pending` until an approved device lets them in.
+  Future<({String id, String status})> createDevice(String name) async {
+    final r = await _send('POST', '/api/v1/devices', {'name': name});
+    return (id: r['device_id'] as String, status: r['status'] as String);
+  }
 
-  Future<void> attachDevice(String deviceId) => _send('POST', '/api/v1/devices/attach', {'device_id': deviceId});
+  /// Bind this session to the device this installation already has. Returns its status.
+  Future<String> attachDevice(String deviceId) async =>
+      (await _send('POST', '/api/v1/devices/attach', {'device_id': deviceId}))['status'] as String;
+
+  Future<String> deviceStatus() async => (await _send('GET', '/api/v1/devices/me'))['status'] as String;
+
+  Future<List<DeviceDto>> devices() async {
+    final r = await _send('GET', '/api/v1/devices');
+    return [
+      for (final d in (r['devices'] as List).cast<Map<String, dynamic>>())
+        DeviceDto(
+            id: d['id'] as String,
+            name: d['name'] as String,
+            status: d['status'] as String,
+            current: d['current'] as bool),
+    ];
+  }
+
+  /// A pending device announces itself, with the key approvers should seal secrets to.
+  Future<void> linkRequest(Uint8List linkPublic) =>
+      _send('POST', '/api/v1/devices/me/link-request', {'link_pub': b64e(linkPublic)});
+
+  Future<List<PendingDeviceDto>> pendingDevices() async {
+    final r = await _send('GET', '/api/v1/devices/pending');
+    return [
+      for (final d in (r['pending'] as List).cast<Map<String, dynamic>>())
+        PendingDeviceDto(id: d['device_id'] as String, name: d['name'] as String, linkPub: b64d(d['link_pub'] as String)),
+    ];
+  }
+
+  /// One key package of another device of the same account (handed out once).
+  Future<Uint8List> takeDeviceKeyPackage(String deviceId) async =>
+      b64d((await _send('POST', '/api/v1/devices/$deviceId/key-package'))['key_package'] as String);
+
+  Future<void> approveDevice(String deviceId, Uint8List bundle) =>
+      _send('POST', '/api/v1/devices/$deviceId/approve', {'bundle': b64e(bundle)});
+
+  /// Secrets an approving device sealed to this one, or null if none are waiting.
+  Future<Uint8List?> bundle() async {
+    try {
+      return b64d((await _send('GET', '/api/v1/devices/me/bundle'))['bundle'] as String);
+    } on ApiException catch (e) {
+      if (e.status == 404) return null;
+      rethrow;
+    }
+  }
+
+  Future<void> deleteBundle() => _send('DELETE', '/api/v1/devices/me/bundle');
+
+  Future<void> revokeDevice(String deviceId) => _send('POST', '/api/v1/devices/$deviceId/revoke');
+
+  /// Add devices to an existing conversation with an MLS commit (for existing members) and one
+  /// Welcome (for the new devices). A 409 "conversation changed" means someone else committed
+  /// first: catch up and try again. Returns the commit's sequence number.
+  Future<int> addDevices(String conversation,
+          {required Uint8List commit,
+          required Uint8List welcome,
+          required List<String> recipients,
+          required int baseSeq}) async =>
+      (await _send('POST', '/api/v1/conversations/$conversation/devices', {
+        'commit': b64e(commit),
+        'welcome': b64e(welcome),
+        'recipients': recipients,
+        'base_seq': baseSeq,
+      }))['seq'] as int;
+
+  // ----- history archive and recovery -----
+
+  Future<void> putArchive(String conversation, List<({int seq, Uint8List data})> entries) =>
+      _send('PUT', '/api/v1/archive/$conversation', {
+        'entries': [for (final e in entries) {'seq': e.seq, 'data': b64e(e.data)}],
+      });
+
+  Future<List<({int seq, Uint8List data})>> archive(String conversation, int after) async {
+    final r = await _send('GET', '/api/v1/archive/$conversation?after=$after&limit=200');
+    return [
+      for (final e in (r['entries'] as List).cast<Map<String, dynamic>>())
+        (seq: e['seq'] as int, data: b64d(e['data'] as String)),
+    ];
+  }
+
+  Future<void> putAccountKeys({required Uint8List wrappedHistoryKey, required Uint8List recoveryAuth}) =>
+      _send('PUT', '/api/v1/account/keys', {
+        'wrapped_hist_key': b64e(wrappedHistoryKey),
+        'recovery_auth': b64e(recoveryAuth),
+      });
+
+  /// Prove possession of the recovery key. On success this device becomes the account's only
+  /// approved device and the wrapped history key comes back.
+  Future<Uint8List> recover(Uint8List recoveryAuth) async =>
+      b64d((await _send('POST', '/api/v1/devices/me/recover', {'recovery_auth': b64e(recoveryAuth)}))['wrapped_hist_key'] as String);
 
   Future<void> putKeyPackages(List<Uint8List> packages) =>
       _send('PUT', '/api/v1/devices/me/key-packages', {'key_packages': packages.map(b64e).toList()});

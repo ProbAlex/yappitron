@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../state/app_state.dart';
 import 'auth_screen.dart';
 import 'home_screen.dart';
+import 'link_screen.dart';
 
 class YapRoot extends StatelessWidget {
   const YapRoot({super.key, required this.app, this.startupError});
@@ -25,6 +26,7 @@ class YapRoot extends StatelessWidget {
               builder: (context, _) => switch (app!.phase) {
                 Phase.booting => const Scaffold(body: Center(child: CircularProgressIndicator())),
                 Phase.signedOut => AuthScreen(app: app!),
+                Phase.awaitingApproval => LinkScreen(app: app!),
                 Phase.signedIn => HomeScreen(app: app!),
               },
             ),

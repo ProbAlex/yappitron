@@ -48,6 +48,7 @@ pub mod method {
     pub const LINK_SEAL: u16 = 43;
     pub const LINK_OPEN: u16 = 44;
     pub const FINGERPRINT: u16 = 45;
+    pub const DERIVE_KEY: u16 = 46;
     pub const VAULT_SEAL: u16 = 40;
     pub const VAULT_OPEN: u16 = 41;
 }
@@ -332,6 +333,8 @@ fn dispatch(m: u16, a: &Args) -> Res {
         USERNAME_CANONICALIZE => username::canonicalize(a.str(0)?)
             .map(|n| vec![n.into_bytes()])
             .map_err(|e| e.message().to_string()),
+        // args: secret, label
+        DERIVE_KEY => Ok(vec![vault::derive_key(a.bytes(0)?, a.bytes(1)?).to_vec()]),
         // args: key32, context, plaintext / sealed
         VAULT_SEAL => Ok(vec![vault::seal(&a.key32(0)?, a.bytes(1)?, a.bytes(2)?)]),
         VAULT_OPEN => Ok(vec![

@@ -85,6 +85,17 @@ class _AuthScreenState extends State<AuthScreen> {
                   Text('Private chat. See what they type, as they type it.',
                       textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
                   const SizedBox(height: 24),
+                  if (app.notice != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(app.notice!, textAlign: TextAlign.center),
+                    ),
+                  ],
                   ..._form(),
                   if (_notice != null) ...[
                     const SizedBox(height: 12),

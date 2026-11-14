@@ -45,6 +45,12 @@ async fn a_second_device_is_pending_and_powerless_until_approved() {
         "the first device is approved automatically"
     );
 
+    // A pending device can manage its key packages (approvers consume one per conversation).
+    let (s, v) = laptop
+        .get(&h, "/api/v1/devices/me/key-packages/count")
+        .await;
+    assert_eq!((s, v["count"].as_i64()), (StatusCode::OK, Some(10)));
+
     // Pending: cannot read conversations, welcomes or archive, and cannot send.
     for path in [
         "/api/v1/conversations",

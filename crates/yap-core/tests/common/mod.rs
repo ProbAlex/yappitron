@@ -596,6 +596,28 @@ pub fn vault_seals_and_binds_to_key_and_context() {
     );
 }
 
+pub fn derive_key_separates_purposes() {
+    let secret = [5u8; 32];
+    let a = rpc(method::DERIVE_KEY, &[&secret, b"purpose a"])
+        .unwrap()
+        .remove(0);
+    let b = rpc(method::DERIVE_KEY, &[&secret, b"purpose b"])
+        .unwrap()
+        .remove(0);
+    assert_eq!(a.len(), 32);
+    assert_ne!(a, b, "different labels give unrelated keys");
+    assert_eq!(
+        a,
+        rpc(method::DERIVE_KEY, &[&secret, b"purpose a"]).unwrap()[0],
+        "deterministic"
+    );
+    assert_ne!(
+        a,
+        rpc(method::DERIVE_KEY, &[&[6u8; 32], b"purpose a"]).unwrap()[0],
+        "depends on the secret"
+    );
+}
+
 pub fn api_errors_are_returned_not_panicked() {
     assert!(rpc(method::KEY_PACKAGE, &[&1234u32.to_le_bytes()]).is_err());
     assert!(rpc(method::KEY_PACKAGE, &[]).is_err(), "missing argument");

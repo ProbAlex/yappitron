@@ -60,13 +60,61 @@ void main() {
     test('two devices exchange encrypted messages', () {
       final p = pair();
       final ct = core.convEncrypt(p.alice, gid, b('hello bob'));
-      expect(String.fromCharCodes(core.convDecrypt(p.bob, gid, ct)), 'hello bob');
+      expect(String.fromCharCodes(core.convDecrypt(p.bob, gid, ct).plaintext), 'hello bob');
       // A sender cannot decrypt its own message, and the error says so.
       final own = core.convEncrypt(p.alice, gid, b('mine'));
       expect(
         () => core.convDecrypt(p.alice, gid, own),
         throwsA(isA<CoreException>().having((e) => e.isOwnMessage, 'isOwnMessage', true)),
       );
+    });
+
+    test('decrypt reports who sent the message', () {
+      final p = pair();
+      final ct = core.convEncrypt(p.alice, gid, b('who is this'));
+      expect(core.convDecrypt(p.bob, gid, ct).sender, 'alice/phone');
+    });
+
+    test('adding a device: fingerprint match, staged commit, sealed history key', () {
+      final p = pair();
+      final laptop = core.deviceNew('alice/laptop');
+      final link = core.linkKeypair();
+      final kp = core.keyPackage(laptop);
+
+      // The approver and the new device compute the same code from their own views.
+      final fromApprover = core.fingerprint(core.keyPackageSigner(kp), link.public);
+      final fromNewDevice = core.fingerprint(core.deviceSigner(laptop), link.public);
+      expect(fromApprover, fromNewDevice);
+      expect(RegExp(r'^[0-9A-F]{4}(-[0-9A-F]{4}){4}$').hasMatch(fromApprover), isTrue, reason: fromApprover);
+      expect(core.fingerprint(core.keyPackageSigner(kp), core.linkKeypair().public), isNot(fromApprover));
+
+      // Staged: nothing changes until confirmed; a discarded commit leaves no trace.
+      final before = core.convEpoch(p.alice, gid);
+      core.convAddMembersStaged(p.alice, gid, [kp]);
+      expect(core.convEpoch(p.alice, gid), before);
+      core.convCommitDiscard(p.alice, gid);
+      final staged = core.convAddMembersStaged(p.alice, gid, [kp]);
+      core.convCommitConfirm(p.alice, gid);
+      core.convApplyCommit(p.bob, gid, staged.commit);
+      core.convJoin(laptop, staged.welcome);
+      expect(core.convEpoch(laptop, gid), before + 1);
+
+      // The history key travels sealed to the new device's link key, and only to it.
+      final history = Uint8List.fromList(List.generate(32, (i) => 255 - i));
+      final sealed = core.linkSeal(link.public, history);
+      expect(core.linkOpen(link.secret, sealed), history);
+      expect(() => core.linkOpen(core.linkKeypair().secret, sealed), throwsA(isA<CoreException>()));
+
+      // The new device reads what Bob writes next, and knows it was Bob.
+      final ct = core.convEncrypt(p.bob, gid, b('hello laptop'));
+      final out = core.convDecrypt(laptop, gid, ct);
+      expect((String.fromCharCodes(out.plaintext), out.sender), ('hello laptop', 'bob/web'));
+    });
+
+    test('derived keys are unrelated per purpose', () {
+      final secret = Uint8List.fromList(List.filled(32, 3));
+      expect(core.deriveKey(secret, 'a'), core.deriveKey(secret, 'a'));
+      expect(core.deriveKey(secret, 'a'), isNot(core.deriveKey(secret, 'b')));
     });
 
     test('live typing frames carry the draft, in order, with unicode', () {
@@ -87,7 +135,7 @@ void main() {
       core.deviceFree(p.alice);
       final restored = core.deviceImport(blob, key);
       final ct = core.convEncrypt(restored, gid, b('after restart'));
-      expect(String.fromCharCodes(core.convDecrypt(p.bob, gid, ct)), 'after restart');
+      expect(String.fromCharCodes(core.convDecrypt(p.bob, gid, ct).plaintext), 'after restart');
       expect(() => core.deviceImport(blob, Uint8List(32)), throwsA(isA<CoreException>()));
     });
 
