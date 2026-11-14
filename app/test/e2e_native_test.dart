@@ -203,6 +203,39 @@ void main() {
     bob.dispose();
   }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
 
+  test('emoji and non-Latin text survive encryption, live typing and storage unchanged', () => diagnosing(() async {
+        final (alice, aliceStore, aliceName) = await signUp('alice');
+        final (bob, _, bobName) = await signUp('bob');
+        // Joined emoji sequences (a family), flags, skin tones, CJK, right-to-left scripts, a
+        // combining accent and Thai: all the shapes that break naive text handling.
+        const text = 'emoji 😀🎉 👨‍👩‍👧 🇯🇵 👍🏽 • 你好世界 • こんにちは • 안녕 • مرحبا • שלום • café • สวัสดี';
+
+        final convId = await alice.startConversation(bobName);
+        await eventually(() => bob.conversation(convId) != null);
+        await bob.accept(bob.conversation(convId)!);
+        await eventually(() => alice.conversation(convId)!.state == ConversationState.joined);
+
+        // Live typing carries it (UTF-8 in padded, encrypted frames).
+        alice.onDraftChanged(alice.conversation(convId)!, text);
+        await eventually(() => bob.conversation(convId)!.liveDraft == text, what: 'the draft with international text');
+
+        // And so do real messages, in both directions.
+        await alice.send(alice.conversation(convId)!, text);
+        await eventually(() => bob.conversation(convId)!.messages.isNotEmpty);
+        expect(bob.conversation(convId)!.messages.single.text, text);
+        await bob.send(bob.conversation(convId)!, text.split('').reversed.join()); // arbitrary other text
+        await eventually(() => alice.conversation(convId)!.messages.length == 2);
+
+        // The saved (encrypted) history comes back identical after a restart.
+        alice.dispose();
+        final restored = YapApp(core: core, store: aliceStore, serverUrl: server!, deviceLabel: 'Test device');
+        await restored.boot();
+        expect(restored.username, aliceName);
+        expect(restored.conversation(convId)!.messages.first.text, text);
+        restored.dispose();
+        bob.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
+
   test('a second device is approved, gets the history, works alongside the first; the recovery key rescues a lost account',
       () => diagnosing(() async {
         final (alice1, _, aliceName) = await signUp('alice');

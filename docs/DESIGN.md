@@ -20,6 +20,7 @@ Yappitron is a self-hosted, end-to-end encrypted messenger that replaces IMO HD.
 | Message requests (strangers can't message until accepted) | Groups, calls |
 | Live typing, per-chat toggle | Disappearing messages |
 | Multi-device, history kept forever | 2FA (TOTP), sealed sender |
+| Emoji and non-Latin text on the web (fonts served from our own server) | |
 | Web, desktop, Android, iOS builds | CI, reproducible web builds |
 
 ## Repository layout
@@ -76,6 +77,20 @@ The server must know the contact graph and sequence numbers. A `Bus` trait is in
 - Email through an SMTP relay (Resend). Cloudflare Email Routing for abuse@ and postmaster@.
 - Backups: nightly `pg_dump` encrypted with `age`; back up `YAP_SERVER_SECRET` separately.
 
+## Multiple devices (as built)
+
+- A device's status is `pending`, `approved` or `revoked`; the account's first device is
+  approved automatically and creates the **history key** and the **recovery key**.
+- A new device shows a code and waits. An approved device compares the code, adds the new device
+  to every conversation (one commit + Welcome each, retried if another member committed first)
+  and seals the history key to it.
+- Every device uploads what it reads to a per-account **archive**, sealed under the history key,
+  so a device added later can show the messages MLS can no longer decrypt.
+- Messages from your other devices are recognised as yours because MLS authenticates the sender.
+- The **recovery key** (shown once) lets a person who lost every device read their history again;
+  that device becomes the only device and starts new chats (old ones are read-only). See
+  `docs/THREAT_MODEL.md` for the trust model and limits.
+
 ## Milestones
 
 | | Milestone |
@@ -84,7 +99,7 @@ The server must know the contact graph and sequence numbers. A `Bus` trait is in
 | M1 | Server skeleton, signup/login/reset with OPAQUE + email verification, real network path. **Server half done** (see `docs/API.md`); the real VPS path and client screens remain |
 | M2 | Message requests, 1:1 messaging, stored log, offline catch-up. **Done** end to end (server, core, Flutter UI). Verified with 16 server integration tests and a two-browser end-to-end test |
 | M3 | Live typing. **Done**: drafts batch every 200 ms and appear live in the other browser; verified end to end |
-| M4 | Multi-device approval, history archive, recovery key, identity reset |
+| M4 | Multi-device approval, history archive, recovery key, identity reset. **Done**: approval with a fingerprint check, adding the device to every conversation, history via the archive, recovery key, device removal. Not done: removing a revoked device from encryption groups |
 | M5 | Platform builds, backups, hardening, no-log audit |
 
 ## Testing

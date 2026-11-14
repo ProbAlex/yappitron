@@ -34,10 +34,11 @@ web-core:
     cargo build -p yap-wasm --target wasm32-unknown-unknown --release
     wasm-bindgen --target web --no-typescript --out-dir app/web/yap_wasm target/wasm32-unknown-unknown/release/yap_wasm.wasm
 
-# Build the web app. CanvasKit and fonts are bundled (nothing is fetched from a CDN) and the
+# Build the web app. CanvasKit and all fonts (incl. emoji and non-Latin scripts) are bundled (nothing is fetched from a CDN) and the
 # output satisfies the strict Content-Security-Policy.
 web-app: web-core
     cd app && flutter build web --release --no-web-resources-cdn --csp
+    scripts/fetch-web-fonts.sh
 
 # Run Dart unit tests against the real core over FFI.
 app-test:

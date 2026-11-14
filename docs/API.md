@@ -38,19 +38,72 @@ every existing session. Encryption keys are unaffected.
 ## Devices and key packages
 
 Every installation is a **device** and its own MLS member. After login the client registers a
-device (first run) or attaches to the one it already has (later logins); chat endpoints
-require a session bound to a device (`403` otherwise).
+device (first run) or attaches to the one it already has (later logins). A device is `approved`
+(reads and sends), `pending` (waiting to be approved) or `revoked`. The **first device of an
+account is approved automatically**; every later one starts `pending` and must be approved by an
+approved device (see "Multiple devices"). Chat endpoints need a session bound to an *approved*
+device (`403` otherwise); a pending device may only manage its key packages, ask to be approved,
+and read its own status.
 
 | Request | Response |
 |---|---|
-| `POST /api/v1/devices` `{name}` | `201 {device_id}`; binds this session |
-| `POST /api/v1/devices/attach` `{device_id}` | `204` (must be the account's own device) |
+| `POST /api/v1/devices` `{name}` | `201 {device_id, status}`; binds this session |
+| `POST /api/v1/devices/attach` `{device_id}` | `{device_id, status}`; `403` if the device was removed |
 | `PUT /api/v1/devices/me/key-packages` `{key_packages:[b64]}` | `204` (max 100 per call, 200 stored) |
 | `GET /api/v1/devices/me/key-packages/count` | `{count}` |
 | `POST /api/v1/users/{username}/key-packages` | `{username, devices:[{device_id, key_package}]}` |
 
 The last call hands out one key package from each of that user's devices, **exactly once**
 (never the caller's own device). Use your own username to get your other devices.
+
+## Multiple devices
+
+Approving a new device is done by one of the account's approved devices, and the server never
+holds a key that decrypts anything:
+
+1. The new device (pending) publishes an X25519 *link key*: `POST /devices/me/link-request`.
+   Both devices show a short **fingerprint** (a hash of the new device's MLS signature key and
+   its link key). The person confirms the two screens match, which defeats a server that swapped
+   either key.
+2. The approving device adds the new device to **every conversation** (`POST
+   /conversations/{id}/devices`, an MLS commit only an existing member can create) and then
+   `POST /devices/{id}/approve` with a **bundle**: the account's history key sealed to the link
+   key.
+3. The new device collects the bundle, opens it, joins its Welcomes and imports the history
+   archive.
+
+| Request | Response |
+|---|---|
+| `GET /api/v1/devices` | `{devices:[{id,name,status,current}]}` (not revoked) |
+| `GET /api/v1/devices/me` | `{device_id, status}` (works while pending) |
+| `POST /api/v1/devices/me/link-request` `{link_pub}` | `204` (pending only; tells approved devices) |
+| `GET /api/v1/devices/pending` | `{pending:[{device_id,name,link_pub}]}` (approved only) |
+| `POST /api/v1/devices/{id}/key-package` | `{key_package}`: one package of another device of the SAME account (pending or approved) |
+| `POST /api/v1/devices/{id}/approve` `{bundle}` | `204`; the device becomes approved |
+| `GET` / `DELETE /api/v1/devices/me/bundle` | the sealed bundle, picked up once |
+| `POST /api/v1/devices/{id}/revoke` | `204`; signs the device out, deletes its keys, memberships and sessions. The last approved device cannot be removed (`409`) |
+| `POST /api/v1/conversations/{id}/devices` `{commit, welcome, recipients, base_seq}` | `{seq}`. `409 "conversation changed"` if another commit landed after `base_seq` (catch up and retry); `409 "already a member"` |
+
+Pending devices are never handed out to people starting conversations, and cannot be added to a
+conversation by anyone but an approved device of their own account.
+
+## History archive and recovery
+
+MLS forward secrecy means a new device cannot decrypt old messages. So every device also seals
+each message it reads under the account's **history key** (never sent to the server) and uploads
+it; a new device downloads the entries and decrypts them with the key from its bundle.
+
+| Request | Response |
+|---|---|
+| `PUT /api/v1/archive/{conversation}` `{entries:[{seq,data}]}` | `204`; per account, duplicates ignored, max 100 per call |
+| `GET /api/v1/archive/{conversation}?after=&limit=` | `{entries:[{seq,data}]}` |
+| `PUT /api/v1/account/keys` `{wrapped_hist_key, recovery_auth}` | `204`; the history key sealed under the **recovery key**, plus a token derived from it (only its hash is stored) |
+| `GET /api/v1/account/keys` | `{wrapped_hist_key}` |
+| `POST /api/v1/devices/me/recover` `{recovery_auth}` | `{wrapped_hist_key, revoked_devices}`. "I lost every device": makes THIS device the only approved device and signs out the rest. `403` for a wrong key; 5 tries per hour |
+
+After a recovery the device is not a member of the account's existing encryption groups. Those
+conversations stay readable (from the archive) but read-only; talking again means starting a new
+conversation.
 
 ## Conversations and message requests
 
@@ -80,12 +133,13 @@ single Welcome, and posts it. The other person sees a **message request** (`stat
 ## WebSocket (`/ws`)
 
 JSON text frames. The first frame must be `{"t":"auth","token":"<session token>"}` within 5
-seconds, from a session bound to a device.
+seconds, from a session bound to a device (a pending device may connect to hear that it was
+approved; it receives no conversation data).
 
 | Direction | Frame |
 |---|---|
 | client -> server | `{"t":"typing","c":conv,"f":b64}`, `{"t":"ack","c":conv,"seq":n}`, `{"t":"ping"}` |
-| server -> client | `{"t":"ready"}`, `{"t":"synced"}`, `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`, `{"t":"member","c","u","s"}`, `{"t":"typing","c","f"}`, `{"t":"pong"}` |
+| server -> client | `{"t":"ready"}`, `{"t":"synced"}`, `{"t":"link_request","device_id","name"}`, `{"t":"approved"}`, `{"t":"revoked"}`, `{"t":"devices_changed"}`, `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`, `{"t":"member","c","u","s"}`, `{"t":"typing","c","f"}`, `{"t":"pong"}` |
 
 After `ready` the server replays everything the device has not acknowledged (welcomes and log
 entries), then sends `synced`; everything after that is live. The replay can include the

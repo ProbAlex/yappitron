@@ -192,3 +192,34 @@ test('a wrong password is refused and the page never contacts a third party', as
   expect([...foreign]).toEqual([]);
   await ctx.close();
 });
+
+test('emoji and non-Latin scripts render from our own fonts, never from a third party', async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const origin = new URL(process.env.E2E_URL ?? 'http://127.0.0.1:18090').host;
+  const foreign = new Set<string>();
+  const fontStatuses: number[] = [];
+  const cspErrors: string[] = [];
+  page.on('request', (r) => {
+    const u = new URL(r.url());
+    if (u.protocol.startsWith('http') && u.host !== origin) foreign.add(u.host);
+  });
+  page.on('response', (r) => {
+    if (r.url().includes('/fonts/s/')) fontStatuses.push(r.status());
+  });
+  page.on('console', (m) => {
+    if (/Content Security Policy|violates/.test(m.text())) cspErrors.push(m.text().slice(0, 140));
+  });
+
+  await page.goto('/');
+  await button(page, 'Log in').waitFor();
+  await page.getByRole('textbox', { name: 'Username', exact: true }).click();
+  // Emoji, CJK, Korean, Arabic, Hebrew, Thai, Devanagari: none are in the bundled base font.
+  await page.keyboard.insertText('😀🎉👋 你好 こんにちは 안녕 مرحبا שלום สวัสดี नमस्ते');
+  // The engine fetches the glyph slices it needs, lazily, from our server.
+  await expect.poll(() => fontStatuses.length, { timeout: 15_000 }).toBeGreaterThan(3);
+  expect(fontStatuses.every((s) => s === 200), `font statuses: ${fontStatuses}`).toBe(true);
+  expect([...foreign]).toEqual([]);
+  expect(cspErrors).toEqual([]);
+  await ctx.close();
+});

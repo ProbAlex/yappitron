@@ -6,7 +6,7 @@ A self-hosted, end-to-end encrypted messenger with **live typing**: see what the
 - Rust backend in Docker, designed to scale across servers
 - End-to-end encryption (MLS), OPAQUE password login, no metadata logs
 
-> **Status: early development.** The crypto core, accounts, the messaging server and the Flutter app (web and Linux desktop verified) work end to end, including live typing, and are covered by automated tests. Mobile and other desktop builds are not verified yet. This is pre-release software. Not audited. Do not use for high-risk communication.
+> **Status: early development.** The crypto core, accounts, the messaging server and the Flutter app (web and Linux desktop verified) work end to end, including live typing and multiple devices per account, and are covered by automated tests. Mobile and other desktop builds are not verified yet. This is pre-release software. Not audited. Do not use for high-risk communication.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the design, [docs/API.md](docs/API.md) for the server API, [docs/CORE_API.md](docs/CORE_API.md) for the client crypto boundary, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
 

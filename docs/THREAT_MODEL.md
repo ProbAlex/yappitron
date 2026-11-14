@@ -21,10 +21,35 @@
   hardware keystore**: the key sits in the browser's storage next to the data, which only
   protects against casual access to the disk, not against malicious scripts or someone using
   the unlocked browser.
-- **Web fonts**: the web build bundles its fonts and CanvasKit, and the strict CSP blocks
-  everything else, so the page never contacts a third party (asserted by the end-to-end tests).
-  The cost: text needing glyphs the bundled font lacks (some scripts, emoji) may render as boxes
-  on the web until a fuller font is bundled. Native apps use system fonts.
+- **Web fonts**: the web build bundles CanvasKit and a base font, and serves the fonts for emoji
+  and every other script (728 small Noto files, fetched one slice at a time on demand) from our
+  own server (`scripts/fetch-web-fonts.sh`), so the page never contacts a third party. The strict
+  CSP blocks everything else, and the end-to-end tests assert no third-party request is made.
+  Native apps use the system fonts.
+
+## Multiple devices
+
+- **Who can add a device.** Only an already-approved device of the same account can add a new
+  one to a conversation (an MLS commit the server cannot forge). The server also cannot read the
+  history key: it is sealed to the new device's link key by the approving device.
+- **What the server could still try.** It could hand the approving device a *different* key
+  package or link key than the new device really published. That is why both devices show the
+  same short code (a hash of both keys) and the person must compare them. If they differ, nothing
+  is approved. This protects against a malicious server, not against a person who approves
+  without looking, or who approves a device they did not set up.
+- **What an approved device can do.** Read everything, including history: approve only devices
+  you control.
+- **The history archive** holds every message ever read, sealed under the account's history key
+  (the server cannot read it), kept forever. The server sees its size and sequence numbers.
+- **The recovery key** unlocks history and signs out every other device. Whoever has it (plus
+  the password) can take over the account's history, so it must be kept private. It is shown
+  once and cannot be recovered. After a recovery, old chats are read-only on the new device.
+- **Removing a device** signs it out and stops delivery, but it remains a member of existing
+  encrypted chats until another member removes it (the app does not yet do that). Do not rely on
+  removal to lock out a stolen device that someone holds together with network access to the
+  encrypted traffic.
+- **The server learns** how many devices an account has, their names, and when they were
+  approved (not when: no timestamps are stored).
 
 ## Known limits
 
