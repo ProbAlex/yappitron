@@ -74,6 +74,16 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Yappitron: build the Rust crypto core (crates/yap-ffi) and bundle it next to the app.
+# `cargo` is a no-op when nothing changed, so running it on every build is cheap.
+set(YAP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(YAP_FFI_LIB "${YAP_REPO_ROOT}/target/release/libyap_ffi.so")
+add_custom_target(yap_ffi ALL
+  COMMAND cargo build --release -p yap-ffi
+  WORKING_DIRECTORY "${YAP_REPO_ROOT}"
+  COMMENT "Building the Rust crypto core"
+  VERBATIM)
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
@@ -95,6 +105,9 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${YAP_FFI_LIB}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

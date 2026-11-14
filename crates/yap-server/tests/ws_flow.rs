@@ -22,8 +22,16 @@ use yap_core::typing;
 struct Ws(WebSocketStream<MaybeTlsStream<TcpStream>>);
 
 impl Ws {
-    /// Connect and authenticate; panics unless the server answers `ready`.
+    /// Connect, authenticate and wait for the replay to finish, so the test only sees what
+    /// happens afterwards. Panics unless the server answers `ready` and `synced`.
     async fn connect(addr: SocketAddr, token: &str) -> Ws {
+        let mut ws = Ws::connect_keeping_replay(addr, token).await;
+        assert!(ws.next_of("synced", 5000).await.is_some(), "synced");
+        ws
+    }
+
+    /// Like `connect`, but returns right after `ready`: the replay is still to be read.
+    async fn connect_keeping_replay(addr: SocketAddr, token: &str) -> Ws {
         let mut ws = Ws::raw(addr).await;
         ws.send(json!({"t": "auth", "token": token})).await;
         assert_eq!(ws.next(2000).await.expect("ready")["t"], "ready");
@@ -253,7 +261,7 @@ async fn offline_devices_get_a_replay_and_acks_stop_it() {
     for t in ["one", "two", "three"] {
         assert_eq!(alice.send(&h, conv, t).await.0, StatusCode::OK);
     }
-    let mut ws = Ws::connect(addr, &bob.token).await;
+    let mut ws = Ws::connect_keeping_replay(addr, &bob.token).await;
     let mut texts = vec![];
     let mut last = 0;
     for _ in 0..3 {
@@ -269,6 +277,10 @@ async fn offline_devices_get_a_replay_and_acks_stop_it() {
         texts.push(String::from_utf8(pt).unwrap());
     }
     assert_eq!(texts, ["one", "two", "three"], "in order");
+    assert!(
+        ws.next_of("synced", 2000).await.is_some(),
+        "the replay ends with synced"
+    );
     ws.send(json!({"t": "ack", "c": conv, "seq": last})).await;
     ws.send(json!({"t": "ping"})).await;
     assert_eq!(ws.next_of("pong", 2000).await.unwrap()["t"], "pong");

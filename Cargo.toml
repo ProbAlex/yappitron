@@ -11,3 +11,7 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

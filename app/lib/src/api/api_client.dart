@@ -11,9 +11,12 @@ String b64e(List<int> bytes) => base64Url.encode(bytes).replaceAll('=', '');
 Uint8List b64d(String s) => base64Url.decode(base64Url.normalize(s));
 
 class ApiException implements Exception {
-  ApiException(this.status, this.message);
+  ApiException(this.status, this.message, {this.cause});
   final int status;
   final String message;
+
+  /// The underlying network error, for diagnostics (never shown to people).
+  final Object? cause;
 
   bool get isUnauthorized => status == 401;
 
@@ -63,7 +66,21 @@ class ApiClient {
         path: '/ws',
       );
 
-  Future<Map<String, dynamic>> _send(String method, String path, [Object? body]) async {
+  /// [retryOnConnectionError]: repeat once if the connection dies before any reply. Only for
+  /// requests that are harmless to repeat. HTTP keep-alive can hand us a socket the server has
+  /// just closed (a "Broken pipe"), and a retry opens a fresh one.
+  Future<Map<String, dynamic>> _send(String method, String path,
+      [Object? body, bool? retryOnConnectionError]) async {
+    final retry = retryOnConnectionError ?? (method == 'GET' || method == 'PUT' || method == 'DELETE');
+    try {
+      return await _sendOnce(method, path, body);
+    } on ApiException catch (e) {
+      if (retry && e.status == 0 && e.cause != null) return _sendOnce(method, path, body);
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _sendOnce(String method, String path, Object? body) async {
     final request = http.Request(method, base.replace(path: path.split('?').first, query: path.contains('?') ? path.split('?').last : null));
     request.headers['content-type'] = 'application/json';
     if (token != null) request.headers['authorization'] = 'Bearer $token';
@@ -71,8 +88,8 @@ class ApiClient {
     final http.StreamedResponse streamed;
     try {
       streamed = await _http.send(request);
-    } catch (_) {
-      throw ApiException(0, 'Cannot reach the server');
+    } catch (e) {
+      throw ApiException(0, 'Cannot reach the server', cause: e);
     }
     final text = await streamed.stream.bytesToString();
     Map<String, dynamic> json = const {};
@@ -145,7 +162,8 @@ class ApiClient {
 
   /// One key package per device of [username], each handed out exactly once.
   Future<List<({String deviceId, Uint8List keyPackage})>> takeKeyPackages(String username) async {
-    final r = await _send('POST', '/api/v1/users/${Uri.encodeComponent(username)}/key-packages', {});
+    // Taking a package is safe to repeat (a spare one is merely used up).
+    final r = await _send('POST', '/api/v1/users/${Uri.encodeComponent(username)}/key-packages', null, true);
     return [
       for (final d in (r['devices'] as List).cast<Map<String, dynamic>>())
         (deviceId: d['device_id'] as String, keyPackage: b64d(d['key_package'] as String)),
@@ -179,9 +197,9 @@ class ApiClient {
     ];
   }
 
-  Future<void> accept(String id) => _send('POST', '/api/v1/conversations/$id/accept', {});
+  Future<void> accept(String id) => _send('POST', '/api/v1/conversations/$id/accept');
 
-  Future<void> decline(String id) => _send('POST', '/api/v1/conversations/$id/decline', {});
+  Future<void> decline(String id) => _send('POST', '/api/v1/conversations/$id/decline');
 
   Future<int> postMessage(String id, int kind, Uint8List data) async =>
       (await _send('POST', '/api/v1/conversations/$id/messages', {'kind': kind, 'data': b64e(data)}))['seq'] as int;

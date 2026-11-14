@@ -3,7 +3,7 @@
 //! Protocol (JSON text frames):
 //! - client -> server: `{"t":"auth","token":...}` (must be first), `{"t":"typing","c":conv,"f":b64}`,
 //!   `{"t":"ack","c":conv,"seq":n}`, `{"t":"ping"}`
-//! - server -> client: `{"t":"ready"}`, `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`,
+//! - server -> client: `{"t":"ready"}`, `{"t":"synced"}` (replay finished), `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`,
 //!   `{"t":"member","c","u","s"}`, `{"t":"typing","c","f"}`, `{"t":"pong"}`
 //!
 //! Typing frames are opaque ciphertext relayed from RAM to the other members' live connections.
@@ -50,8 +50,11 @@ async fn serve(st: AppState, mut socket: WebSocket) {
     };
     let (conn_id, mut rx) = st.hub.connect(device);
     // Subscribe first, then replay, so nothing slips between the two (duplicates are fine).
+    // Subscribe first, then replay, so nothing slips between the two (duplicates are fine).
+    // `synced` marks the end of the replay: everything after it is live.
     let ok = send(&mut socket, json!({ "t": "ready" })).await.is_ok()
-        && backlog(&st, device, &mut socket).await.is_ok();
+        && backlog(&st, device, &mut socket).await.is_ok()
+        && send(&mut socket, json!({ "t": "synced" })).await.is_ok();
     if ok {
         let mut typing = (Instant::now(), 0u32);
         loop {

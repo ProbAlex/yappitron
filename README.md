@@ -45,6 +45,10 @@ verification code, are appended to that file instead of being sent) and `YAP_WEB
 (the gateway then also serves the web app). `YAP_DOMAIN` must equal the hostname you browse to,
 because OPAQUE binds it into the login.
 
+Desktop (Linux verified): `cd app && flutter build linux --release` builds the Rust core as part
+of the app and bundles it. Web: `just web-app`, then serve `app/build/web` (the gateway does it
+with `YAP_WEB_DIR`). Other platforms need their native build integration; see "Status".
+
 Copy `.env.example` to `.env` for local config. Never commit `.env`.
 
 ## License

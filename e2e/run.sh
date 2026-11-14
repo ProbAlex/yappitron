@@ -40,9 +40,18 @@ RUST_LOG=warn \
 GATEWAY_PID=$!
 until curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null; do sleep 0.5; done
 
-cd e2e
+# E2E_ONLY=web or E2E_ONLY=native runs just one half (extra arguments go to Playwright).
+STATUS=0
 set +e
-E2E_URL="http://127.0.0.1:$PORT" E2E_MAIL_FILE="$MAIL" npx playwright test "$@"
-STATUS=$?
+if [ "${E2E_ONLY:-all}" != native ]; then
+  (cd e2e && E2E_URL="http://127.0.0.1:$PORT" E2E_MAIL_FILE="$MAIL" npx playwright test "$@") || STATUS=1
+fi
+if [ "${E2E_ONLY:-all}" != web ]; then
+  # The same flows, driven through the Dart app logic on the VM with the real Rust core over FFI.
+  command -v flutter >/dev/null || export PATH="$HOME/dev/flutter/bin:$PATH"
+  cargo build -p yap-ffi
+  (cd app && YAP_E2E_SERVER="http://127.0.0.1:$PORT" YAP_E2E_MAIL_FILE="$MAIL" \
+    YAP_NATIVE_LIB="$ROOT/target/debug/libyap_ffi.so" flutter test test/e2e_native_test.dart) || STATUS=1
+fi
 if [ $STATUS -ne 0 ]; then echo "--- gateway log ---"; cat "$WORK/gateway.log"; fi
 exit $STATUS

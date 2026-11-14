@@ -85,10 +85,12 @@ seconds, from a session bound to a device.
 | Direction | Frame |
 |---|---|
 | client -> server | `{"t":"typing","c":conv,"f":b64}`, `{"t":"ack","c":conv,"seq":n}`, `{"t":"ping"}` |
-| server -> client | `{"t":"ready"}`, `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`, `{"t":"member","c","u","s"}`, `{"t":"typing","c","f"}`, `{"t":"pong"}` |
+| server -> client | `{"t":"ready"}`, `{"t":"synced"}`, `{"t":"msg","c","seq","k","d"}`, `{"t":"welcome","id","c","join_seq","d"}`, `{"t":"member","c","u","s"}`, `{"t":"typing","c","f"}`, `{"t":"pong"}` |
 
 After `ready` the server replays everything the device has not acknowledged (welcomes and log
-entries). Clients de-duplicate by sequence number and, if they see a gap, refetch over REST.
+entries), then sends `synced`; everything after that is live. The replay can include the
+device's own messages (a sender's cursor is not advanced past messages it has not acknowledged);
+the core reports those as `own message` and clients skip them. Clients de-duplicate by sequence number and, if they see a gap, refetch over REST.
 **Typing frames** are opaque ciphertext relayed from RAM to the other joined members' live
 connections: never stored, at most 20 per second per connection, at most 4 KB, and dropped for
 non-members or while a request is pending.
