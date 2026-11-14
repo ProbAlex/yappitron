@@ -80,8 +80,8 @@ The server must know the contact graph and sequence numbers. A `Bus` trait is in
 
 | | Milestone |
 |---|---|
-| M0 | Spike: OpenMLS and opaque-ke on native + WASM. Go/no-go, with the vodozemac fallback |
-| M1 | Server skeleton, signup/login/reset with OPAQUE + email verification, real network path |
+| M0 | Spike: OpenMLS and opaque-ke on native + WASM. Go/no-go, with the vodozemac fallback. **Done:** MLS (including the live-typing key) and OPAQUE pass the same tests natively and inside WASM. Not yet done: the Flutter bridge (needs the Flutter SDK) |
+| M1 | Server skeleton, signup/login/reset with OPAQUE + email verification, real network path. **Server half done** (see `docs/API.md`); the real VPS path and client screens remain |
 | M2 | Message requests, 1:1 messaging, stored log, offline catch-up |
 | M3 | Live typing |
 | M4 | Multi-device approval, history archive, recovery key, identity reset |

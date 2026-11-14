@@ -1,0 +1,7 @@
+.git
+target
+.env
+.env.*
+!.env.example
+app/build
+app/.dart_tool

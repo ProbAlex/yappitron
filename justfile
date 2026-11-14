@@ -13,6 +13,14 @@ lint:
 test:
     cargo test --workspace
 
+# Server integration tests against a throwaway Postgres container (needs Docker).
+test-server:
+    -docker rm -f yap-test-pg
+    docker run -d --rm --name yap-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=yaptest -p 127.0.0.1:54329:5432 --tmpfs /var/lib/postgresql/data postgres:17-alpine
+    until docker exec yap-test-pg pg_isready -U postgres -d yaptest; do sleep 1; done
+    TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/yaptest cargo test -p yap-server
+    docker rm -f yap-test-pg
+
 # Make sure the shared core still compiles for the browser.
 wasm-check:
     cargo check -p yap-core --target wasm32-unknown-unknown

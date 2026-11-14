@@ -6,9 +6,9 @@ A self-hosted, end-to-end encrypted messenger with **live typing**: see what the
 - Rust backend in Docker, designed to scale across servers
 - End-to-end encryption (MLS), OPAQUE password login, no metadata logs
 
-> **Status: early development (milestone M0).** Not audited. Do not use for high-risk communication.
+> **Status: early development.** M0 (crypto spike) and the server half of M1 (accounts) are done; there is no client UI yet. Not audited. Do not use for high-risk communication.
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the design and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
+See [docs/DESIGN.md](docs/DESIGN.md) for the design, [docs/API.md](docs/API.md) for the account API, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for what the server can and cannot see.
 
 ## Layout
 
@@ -26,9 +26,10 @@ docs/               design and threat model
 Requires Rust (stable) with the `wasm32-unknown-unknown` target, and [just](https://github.com/casey/just).
 
 ```sh
-just test         # run all tests
+just test         # unit + core tests (server integration tests skip without a database)
+just test-server  # server integration tests against a throwaway Postgres (needs Docker)
 just lint         # fmt + clippy
-just wasm-check   # confirm the core still builds for the browser
+just wasm-test    # run the core's MLS + OPAQUE tests inside WASM (needs wasm-bindgen-cli)
 ```
 
 Copy `.env.example` to `.env` for local config. Never commit `.env`.
