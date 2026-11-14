@@ -3,6 +3,7 @@ import 'package:flutter/semantics.dart';
 
 import 'src/config.dart';
 import 'src/core/backend.dart';
+import 'src/core/secure_context.dart';
 import 'src/core/yap_core.dart';
 import 'src/data/local_store.dart';
 import 'src/state/app_state.dart';
@@ -17,6 +18,10 @@ Future<void> main() async {
   Object? failure;
   YapApp? app;
   try {
+    if (!isSecureContext) {
+      throw StateError(
+          'Yappitron needs a secure connection. Open this site with https:// (plain http:// pages cannot use the browser\'s encryption and key storage).');
+    }
     final core = YapCore(await openBackend());
     final store = await PlatformStore.open();
     app = YapApp(core: core, store: store, serverUrl: defaultServerUrl(), deviceLabel: deviceLabel());

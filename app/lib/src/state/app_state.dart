@@ -29,6 +29,10 @@ class YapApp extends ChangeNotifier {
 
   final YapCore core;
   final LocalStore store;
+
+  /// Called with errors raised while processing background events (incoming messages,
+  /// welcomes, sync). They never reach the UI, so tests and diagnostics hook in here.
+  void Function(Object error, StackTrace stack)? onBackgroundError;
   final String deviceLabel;
   ApiClient api;
   String _serverUrl;
@@ -291,7 +295,9 @@ class YapApp extends ChangeNotifier {
 
   /// Events are processed strictly one at a time, in arrival order.
   Future<void> _enqueue(Future<void> Function() job) {
-    _queue = _queue.then((_) => job()).catchError((Object _) {});
+    _queue = _queue.then((_) => job()).catchError((Object e, StackTrace st) {
+      onBackgroundError?.call(e, st);
+    });
     return _queue;
   }
 

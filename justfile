@@ -48,6 +48,11 @@ app-test:
 e2e:
     e2e/run.sh
 
+# Try it locally: Postgres + gateway serving the web app (needs `just web-app` first).
+# `scripts/dev.sh code` prints the verification code; `scripts/dev.sh stop` cleans up.
+dev:
+    scripts/dev.sh start
+
 # Start the home stack (gateway + postgres) from deploy/home.
 up:
     docker compose -f deploy/home/compose.yml --env-file .env up -d --build

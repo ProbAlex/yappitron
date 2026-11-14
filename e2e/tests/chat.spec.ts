@@ -1,22 +1,52 @@
 import { test, expect, Browser, BrowserContext, Page } from '@playwright/test';
 import { readFileSync, existsSync } from 'node:fs';
 
-const MAIL_FILE = process.env.E2E_MAIL_FILE!;
+const MAIL_FILE = process.env.E2E_MAIL_FILE;
+/** Deployed runs: read codes back from Resend (recipients are Resend's own test inboxes). */
+const RESEND_KEY = process.env.E2E_RESEND_KEY;
 const PASSWORD = 'correct horse battery staple';
 
 /** Any request to a host other than the app's own: there must never be one. */
 const foreignRequests: string[] = [];
 
-/** The verification code emailed to `to` (the `already`-th message to that address). */
-async function codeFor(to: string, already = 0): Promise<string> {
-  for (let i = 0; i < 80; i++) {
-    if (existsSync(MAIL_FILE)) {
-      const lines = readFileSync(MAIL_FILE, 'utf8').trim().split('\n').filter(Boolean)
-        .map((l) => JSON.parse(l)).filter((m) => m.to === to);
-      const m = lines[already];
-      if (m) return /(\d{6})/.exec(m.subject)![1];
+/** Every page a test opened, so a failure can show what each one was displaying. */
+const openPages: { who: string; page: Page }[] = [];
+
+test.afterEach(async ({}, info) => {
+  if (info.status !== info.expectedStatus) {
+    for (const { who, page } of openPages) {
+      const tree = await page.locator('body').ariaSnapshot().catch(() => '(page closed)');
+      console.log(`--- ${who}'s page at failure ---\n` + tree.split('\n').filter((l) => !/^\s*- (generic:?|textbox)$|button "Submit"/.test(l)).slice(0, 20).join('\n'));
     }
-    await new Promise((r) => setTimeout(r, 100));
+  }
+  openPages.length = 0;
+});
+
+/** The address a test account signs up with. */
+const emailFor = (username: string) =>
+  RESEND_KEY ? `delivered+${username}@resend.dev` : `${username}@example.test`;
+
+async function codeFromFile(to: string): Promise<string | undefined> {
+  if (!MAIL_FILE || !existsSync(MAIL_FILE)) return undefined;
+  const mails = readFileSync(MAIL_FILE, 'utf8').trim().split('\n').filter(Boolean)
+    .map((l) => JSON.parse(l)).filter((m) => m.to === to);
+  return mails.length ? /(\d{6})/.exec(mails[0].subject)![1] : undefined;
+}
+
+async function codeFromResend(to: string): Promise<string | undefined> {
+  const res = await fetch('https://api.resend.com/emails?limit=40', { headers: { authorization: `Bearer ${RESEND_KEY}` } });
+  if (!res.ok) return undefined; // Resend allows 2 requests/second; the caller retries
+  const { data } = (await res.json()) as { data: { to: string[]; subject: string }[] };
+  const mail = data.find((m) => m.to.includes(to));
+  return mail ? /code: (\d{6})/.exec(mail.subject)?.[1] : undefined;
+}
+
+/** The verification code emailed to `to`. */
+async function codeFor(to: string): Promise<string> {
+  for (let i = 0; i < 80; i++) {
+    const code = RESEND_KEY ? await codeFromResend(to) : await codeFromFile(to);
+    if (code) return code;
+    await new Promise((r) => setTimeout(r, RESEND_KEY ? 1500 : 100));
   }
   throw new Error(`no email for ${to}`);
 }
@@ -33,8 +63,10 @@ async function fill(page: Page, name: string | RegExp, text: string) {
     await expect(field).toBeFocused();
     await page.keyboard.press('Control+A');
     await page.keyboard.type(text, { delay: 8 });
+    // Flutter can finish attaching its text input just AFTER we typed and reset the field to
+    // its own (empty) state. Only trust the value once it has survived a short settle.
+    await page.waitForTimeout(300);
     if ((await field.inputValue().catch(() => text)) === text) return;
-    await page.waitForTimeout(200);
   }
   throw new Error(`could not type into "${name}"`);
 }
@@ -43,7 +75,7 @@ const button = (page: Page, name: string | RegExp) =>
   page.getByRole('button', { name, exact: typeof name === 'string' });
 
 async function signup(page: Page, username: string) {
-  const email = `${username}@example.test`;
+  const email = emailFor(username);
   await page.goto('/');
   await button(page, 'Create an account').click();
   await fill(page, 'Email address', email);
@@ -59,9 +91,10 @@ async function signup(page: Page, username: string) {
 }
 
 async function newUser(browser: Browser, label: string): Promise<{ ctx: BrowserContext; page: Page; name: string }> {
-  const name = `${label}${Math.random().toString(36).slice(2, 8)}`;
+  const name = `e2e${label}${Math.random().toString(36).slice(2, 8)}`;
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
+  openPages.push({ who: label, page });
   page.on('pageerror', (e) => console.log(`[${label}] PAGE ERROR: ${e.message}`));
   const origin = new URL(process.env.E2E_URL ?? 'http://127.0.0.1:18090').host;
   page.on('request', (r) => {

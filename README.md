@@ -39,7 +39,11 @@ just e2e          # two real browsers chat through a real gateway (after `just w
 just lint         # fmt + clippy
 ```
 
-To try it locally, run Postgres and the gateway (`cargo run -p yap-server`) with the variables
+Quickest way to try it: `just web-app && scripts/dev.sh start`, then open http://127.0.0.1:18095
+(or point the Linux app at it). Verification codes are written to a file instead of emailed:
+`scripts/dev.sh code`.
+
+To run the pieces yourself, run Postgres and the gateway (`cargo run -p yap-server`) with the variables
 from `.env.example`. For local development set `YAP_DEV_MAIL_FILE` (emails, including the
 verification code, are appended to that file instead of being sent) and `YAP_WEB_DIR=app/build/web`
 (the gateway then also serves the web app). `YAP_DOMAIN` must equal the hostname you browse to,
