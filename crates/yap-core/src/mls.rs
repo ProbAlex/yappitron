@@ -92,6 +92,17 @@ fn decode_storage(mut buf: &[u8]) -> Result<HashMap<Vec<u8>, Vec<u8>>, Error> {
     Ok(map)
 }
 
+/// A decrypted application message and who sent it.
+pub struct Decrypted {
+    pub plaintext: Vec<u8>,
+    /// The sender's MLS credential identity (`username/device-id`), authenticated by MLS.
+    pub sender: Vec<u8>,
+}
+
+/// How many past epochs keep their keys, so messages that were in flight when a device was
+/// added (sent just before, delivered just after) can still be read.
+const MAX_PAST_EPOCHS: usize = 5;
+
 /// One device's MLS identity and state.
 pub struct Device {
     provider: OpenMlsRustCrypto,
@@ -182,6 +193,11 @@ impl Device {
         })
     }
 
+    /// This device's MLS signature public key (its stable identity inside groups).
+    pub fn signer_public(&self) -> Vec<u8> {
+        self.signer.public().to_vec()
+    }
+
     // ----- key packages -----
 
     /// A serialized key package for others to add this device to a group.
@@ -211,6 +227,7 @@ impl Device {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(CIPHERSUITE)
             .use_ratchet_tree_extension(true)
+            .max_past_epochs(MAX_PAST_EPOCHS)
             .build();
         MlsGroup::new_with_group_id(
             &self.provider,
@@ -232,6 +249,7 @@ impl Device {
         };
         let config = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
+            .max_past_epochs(MAX_PAST_EPOCHS)
             .build();
         let group = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)
             .map_err(mls)?
@@ -240,10 +258,23 @@ impl Device {
         Ok(group.group_id().as_slice().to_vec())
     }
 
-    /// Add one or more devices in a single commit. Returns `(commit, welcome)` to send via the
-    /// server: the commit goes to existing members, the one welcome to every new device. The
-    /// local group state advances immediately.
+    /// Add one or more devices in a single commit and apply it locally right away. Use
+    /// [`Device::add_members_staged`] when the commit might be rejected by the server.
     pub fn add_members(
+        &self,
+        group_id: &[u8],
+        key_packages: &[&[u8]],
+    ) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        let out = self.add_members_staged(group_id, key_packages)?;
+        self.confirm_pending(group_id)?;
+        Ok(out)
+    }
+
+    /// Build a commit adding devices WITHOUT applying it: the group stays on its current epoch
+    /// with the commit pending. Post `(commit, welcome)` to the server, then call
+    /// [`Device::confirm_pending`] if it was accepted or [`Device::discard_pending`] if not
+    /// (for example because another member's commit landed first).
+    pub fn add_members_staged(
         &self,
         group_id: &[u8],
         key_packages: &[&[u8]],
@@ -261,11 +292,24 @@ impl Device {
         let (commit, welcome, _info) = group
             .add_members(&self.provider, &self.signer, &kps)
             .map_err(mls)?;
-        group.merge_pending_commit(&self.provider).map_err(mls)?;
         Ok((
             commit.tls_serialize_detached().map_err(codec)?,
             welcome.tls_serialize_detached().map_err(codec)?,
         ))
+    }
+
+    /// Apply the commit staged by [`Device::add_members_staged`].
+    pub fn confirm_pending(&self, group_id: &[u8]) -> Result<(), Error> {
+        self.group(group_id)?
+            .merge_pending_commit(&self.provider)
+            .map_err(mls)
+    }
+
+    /// Drop the commit staged by [`Device::add_members_staged`]; the group is unchanged.
+    pub fn discard_pending(&self, group_id: &[u8]) -> Result<(), Error> {
+        self.group(group_id)?
+            .clear_pending_commit(self.provider.storage())
+            .map_err(mls)
     }
 
     /// Encrypt an application message (a chat message).
@@ -277,8 +321,9 @@ impl Device {
         out.tls_serialize_detached().map_err(codec)
     }
 
-    /// Decrypt an application message from another member.
-    pub fn decrypt(&self, group_id: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+    /// Decrypt an application message from another member (or another device of the same
+    /// account). A device's own ciphertext cannot be decrypted: that is [`Error::OwnMessage`].
+    pub fn decrypt(&self, group_id: &[u8], ciphertext: &[u8]) -> Result<Decrypted, Error> {
         let mut group = self.group(group_id)?;
         let msg = MlsMessageIn::tls_deserialize_exact(ciphertext).map_err(codec)?;
         let protocol: ProtocolMessage = msg
@@ -287,8 +332,15 @@ impl Device {
         let processed = group
             .process_message(&self.provider, protocol)
             .map_err(mls)?;
+        let sender = BasicCredential::try_from(processed.credential().clone())
+            .map_err(mls)?
+            .identity()
+            .to_vec();
         match processed.into_content() {
-            ProcessedMessageContent::ApplicationMessage(app) => Ok(app.into_bytes()),
+            ProcessedMessageContent::ApplicationMessage(app) => Ok(Decrypted {
+                plaintext: app.into_bytes(),
+                sender,
+            }),
             ProcessedMessageContent::OwnPrivateMessage => Err(Error::OwnMessage),
             _ => Err(Error::UnexpectedMessage("expected an application message")),
         }
@@ -331,4 +383,16 @@ impl Device {
             .try_into()
             .map_err(|_| Error::UnexpectedMessage("exporter returned wrong length"))
     }
+}
+
+/// The signature public key inside a serialized key package (the device identity it claims).
+pub fn key_package_signer(key_package: &[u8]) -> Result<Vec<u8>, Error> {
+    let kp = KeyPackageIn::tls_deserialize_exact(key_package).map_err(codec)?;
+    // Structural parse only: the server cannot be trusted to hand out valid packages, and
+    // `add_members` validates the full package (signature, lifetime, ciphersuite) before use.
+    let provider = OpenMlsRustCrypto::default();
+    let kp = kp
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(mls)?;
+    Ok(kp.leaf_node().signature_key().as_slice().to_vec())
 }

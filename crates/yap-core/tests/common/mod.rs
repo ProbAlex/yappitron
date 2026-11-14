@@ -8,7 +8,8 @@ use opaque_ke::{
 };
 use yap_core::api::{self, method};
 use yap_core::auth::{self, Error};
-use yap_core::mls::Device;
+use yap_core::link;
+use yap_core::mls::{self, Device};
 use yap_core::typing;
 use yap_proto::auth::{CONTEXT, YapOpaque, opaque_ke};
 
@@ -124,9 +125,9 @@ pub fn mls_two_devices_chat_and_share_typing_key() {
     assert_eq!(alice.epoch(GID).unwrap(), bob.epoch(GID).unwrap());
 
     let ct = alice.encrypt(GID, b"hello bob").unwrap();
-    assert_eq!(bob.decrypt(GID, &ct).unwrap(), b"hello bob");
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"hello bob");
     let ct = bob.encrypt(GID, b"hi alice").unwrap();
-    assert_eq!(alice.decrypt(GID, &ct).unwrap(), b"hi alice");
+    assert_eq!(alice.decrypt(GID, &ct).unwrap().plaintext, b"hi alice");
 
     // The ciphertext must not contain the plaintext.
     let ct = alice.encrypt(GID, b"super secret text").unwrap();
@@ -157,7 +158,7 @@ pub fn mls_outsider_cannot_decrypt() {
 pub fn mls_state_survives_export_import() {
     let (alice, bob) = paired();
     let ct = alice.encrypt(GID, b"before restart").unwrap();
-    assert_eq!(bob.decrypt(GID, &ct).unwrap(), b"before restart");
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"before restart");
 
     let (key_a, key_b) = ([1u8; 32], [2u8; 32]);
     let (blob_a, blob_b) = (alice.export(&key_a).unwrap(), bob.export(&key_b).unwrap());
@@ -167,9 +168,9 @@ pub fn mls_state_survives_export_import() {
     let bob = Device::import(&blob_b, &key_b).unwrap();
     assert_eq!(alice.name(), b"alice/phone");
     let ct = alice.encrypt(GID, b"after restart").unwrap();
-    assert_eq!(bob.decrypt(GID, &ct).unwrap(), b"after restart");
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"after restart");
     let ct = bob.encrypt(GID, b"and back").unwrap();
-    assert_eq!(alice.decrypt(GID, &ct).unwrap(), b"and back");
+    assert_eq!(alice.decrypt(GID, &ct).unwrap().plaintext, b"and back");
 }
 
 pub fn mls_own_message_is_reported_not_decrypted() {
@@ -180,7 +181,7 @@ pub fn mls_own_message_is_reported_not_decrypted() {
         Err(yap_core::mls::Error::OwnMessage)
     ));
     // The recipient is unaffected by Alice having seen her own echo.
-    assert_eq!(bob.decrypt(GID, &ct).unwrap(), b"mine");
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"mine");
 }
 
 pub fn mls_one_commit_adds_several_devices_and_old_members_follow() {
@@ -199,8 +200,8 @@ pub fn mls_one_commit_adds_several_devices_and_old_members_follow() {
     assert_eq!(bob.member_count(GID).unwrap(), 3);
 
     let ct = alice.encrypt(GID, b"to everyone").unwrap();
-    assert_eq!(alice2.decrypt(GID, &ct).unwrap(), b"to everyone");
-    assert_eq!(bob.decrypt(GID, &ct).unwrap(), b"to everyone");
+    assert_eq!(alice2.decrypt(GID, &ct).unwrap().plaintext, b"to everyone");
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"to everyone");
 
     // A later commit (adding a fourth device) must be applied by existing members.
     let carol = Device::new(b"carol/phone").unwrap();
@@ -216,6 +217,186 @@ pub fn mls_one_commit_adds_several_devices_and_old_members_follow() {
         alice.typing_key(GID).unwrap(),
         carol.typing_key(GID).unwrap()
     );
+}
+
+pub fn mls_decrypt_reports_the_authenticated_sender() {
+    let (alice, bob) = paired();
+    let ct = alice.encrypt(GID, b"who am i").unwrap();
+    let got = bob.decrypt(GID, &ct).unwrap();
+    assert_eq!(got.plaintext, b"who am i");
+    assert_eq!(got.sender, b"alice/phone");
+}
+
+pub fn mls_staged_commit_can_be_confirmed_or_discarded() {
+    let (alice, bob) = paired();
+    let carol = Device::new(b"carol/phone").unwrap();
+    let before = alice.epoch(GID).unwrap();
+
+    // Staged: nothing changes until confirmed, and a discarded commit leaves no trace.
+    let _ = alice
+        .add_members_staged(GID, &[&carol.key_package().unwrap()])
+        .unwrap();
+    assert_eq!(alice.epoch(GID).unwrap(), before);
+    alice.discard_pending(GID).unwrap();
+    assert_eq!(alice.epoch(GID).unwrap(), before);
+    let ct = alice.encrypt(GID, b"still fine after a discard").unwrap();
+    assert_eq!(
+        bob.decrypt(GID, &ct).unwrap().plaintext,
+        b"still fine after a discard"
+    );
+
+    // Stage again, confirm, and everyone converges on the new epoch.
+    let (commit, welcome) = alice
+        .add_members_staged(GID, &[&carol.key_package().unwrap()])
+        .unwrap();
+    alice.confirm_pending(GID).unwrap();
+    bob.apply_commit(GID, &commit).unwrap();
+    carol.join(&welcome).unwrap();
+    assert_eq!(alice.epoch(GID).unwrap(), before + 1);
+    assert_eq!(bob.epoch(GID).unwrap(), before + 1);
+    assert_eq!(carol.epoch(GID).unwrap(), before + 1);
+    assert_eq!(
+        alice.typing_key(GID).unwrap(),
+        carol.typing_key(GID).unwrap()
+    );
+}
+
+pub fn mls_messages_in_flight_across_a_membership_change_still_decrypt() {
+    let (alice, bob) = paired();
+    // Bob writes while still on the old epoch; Alice's commit (adding Carol) lands first.
+    let in_flight = bob
+        .encrypt(GID, b"sent just before the new device joined")
+        .unwrap();
+    let carol = Device::new(b"carol/phone").unwrap();
+    let (commit, _welcome) = alice
+        .add_members(GID, &[&carol.key_package().unwrap()])
+        .unwrap();
+    // Alice is already on the new epoch, yet can read Bob's message from the previous one.
+    assert_eq!(
+        alice.decrypt(GID, &in_flight).unwrap().plaintext,
+        b"sent just before the new device joined"
+    );
+    // Bob catches up and the conversation carries on.
+    bob.apply_commit(GID, &commit).unwrap();
+    let ct = alice.encrypt(GID, b"welcome carol").unwrap();
+    assert_eq!(bob.decrypt(GID, &ct).unwrap().plaintext, b"welcome carol");
+}
+
+pub fn link_seal_roundtrip_and_rejects_tampering() {
+    let (secret, public) = link::keypair();
+    let sealed = link::seal(&public, b"the history key").unwrap();
+    assert!(!sealed.windows(7).any(|w| w == b"history"));
+    assert_eq!(link::open(&secret, &sealed).unwrap(), b"the history key");
+    // Fresh randomness each time.
+    assert_ne!(sealed, link::seal(&public, b"the history key").unwrap());
+
+    let (other_secret, _) = link::keypair();
+    assert!(
+        link::open(&other_secret, &sealed).is_err(),
+        "wrong recipient"
+    );
+    let mut bad = sealed.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(link::open(&secret, &bad).is_err(), "tampered");
+    let mut bad = sealed.clone();
+    bad[0] ^= 1; // the ephemeral key is bound into the key and the associated data
+    assert!(link::open(&secret, &bad).is_err(), "tampered ephemeral key");
+    assert!(link::open(&secret, &sealed[..40]).is_err(), "truncated");
+    assert!(
+        link::seal(&[0u8; 32], b"x").is_err(),
+        "an all-zero public key must be refused"
+    );
+}
+
+pub fn fingerprint_binds_both_keys_and_is_stable() {
+    let d = Device::new(b"alice/new").unwrap();
+    let (_, link_pub) = link::keypair();
+    let sig = d.signer_public();
+    let fp = link::fingerprint(&sig, &link_pub);
+    assert_eq!(fp, link::fingerprint(&sig, &link_pub), "stable");
+    assert_eq!(fp.len(), 24);
+    assert_eq!(fp.matches('-').count(), 4);
+    assert!(fp.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+    let other = Device::new(b"mallory/x").unwrap();
+    assert_ne!(
+        fp,
+        link::fingerprint(&other.signer_public(), &link_pub),
+        "different signature key"
+    );
+    assert_ne!(
+        fp,
+        link::fingerprint(&sig, &link::keypair().1),
+        "different link key"
+    );
+
+    // The approving device reads the signer out of the key package the server hands it.
+    assert_eq!(
+        mls::key_package_signer(&d.key_package().unwrap()).unwrap(),
+        sig
+    );
+    assert!(mls::key_package_signer(b"garbage").is_err());
+}
+
+pub fn api_multi_device_methods() {
+    let new = |name: &[u8]| rpc(method::DEVICE_NEW, &[name]).unwrap().remove(0);
+    let (alice, bob, alice2) = (new(b"alice/phone"), new(b"bob/web"), new(b"alice/laptop"));
+    rpc(method::CONV_CREATE, &[&alice, GID]).unwrap();
+    let kp_bob = rpc(method::KEY_PACKAGE, &[&bob]).unwrap().remove(0);
+    let welcome = rpc(method::CONV_ADD_MEMBERS, &[&alice, GID, &kp_bob])
+        .unwrap()
+        .remove(1);
+    rpc(method::CONV_JOIN, &[&bob, &welcome]).unwrap();
+
+    // The new device publishes a link key; the approver computes the same fingerprint from
+    // what the server shows it.
+    let mut pair = rpc(method::LINK_KEYPAIR, &[]).unwrap();
+    let (link_pub, link_secret) = (pair.remove(1), pair.remove(0));
+    let kp2 = rpc(method::KEY_PACKAGE, &[&alice2]).unwrap().remove(0);
+    let signer = rpc(method::KEY_PACKAGE_SIGNER, &[&kp2]).unwrap().remove(0);
+    assert_eq!(signer, rpc(method::DEVICE_SIGNER, &[&alice2]).unwrap()[0]);
+    let fp_new_device = rpc(
+        method::FINGERPRINT,
+        &[
+            &rpc(method::DEVICE_SIGNER, &[&alice2]).unwrap()[0],
+            &link_pub,
+        ],
+    )
+    .unwrap()
+    .remove(0);
+    let fp_approver = rpc(method::FINGERPRINT, &[&signer, &link_pub])
+        .unwrap()
+        .remove(0);
+    assert_eq!(fp_new_device, fp_approver);
+
+    // Staged add, then confirm; then the secret travels sealed to the new device.
+    let mut staged = rpc(method::CONV_ADD_MEMBERS_STAGED, &[&alice, GID, &kp2]).unwrap();
+    let (commit, welcome2) = (staged.remove(0), staged.remove(0));
+    rpc(method::CONV_COMMIT_CONFIRM, &[&alice, GID]).unwrap();
+    rpc(method::CONV_APPLY_COMMIT, &[&bob, GID, &commit]).unwrap();
+    rpc(method::CONV_JOIN, &[&alice2, &welcome2]).unwrap();
+    let sealed = rpc(method::LINK_SEAL, &[&link_pub, b"history key bytes"])
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        rpc(method::LINK_OPEN, &[&link_secret, &sealed]).unwrap()[0],
+        b"history key bytes"
+    );
+
+    // The new device reads a message from Bob and sees who sent it.
+    let ct = rpc(method::CONV_ENCRYPT, &[&bob, GID, b"hi alice laptop"])
+        .unwrap()
+        .remove(0);
+    let out = rpc(method::CONV_DECRYPT, &[&alice2, GID, &ct]).unwrap();
+    assert_eq!(
+        (out[0].as_slice(), out[1].as_slice()),
+        (&b"hi alice laptop"[..], &b"bob/web"[..])
+    );
+    // A staged commit can also be discarded through the API.
+    let carol = rpc(method::KEY_PACKAGE, &[&new(b"carol/x")])
+        .unwrap()
+        .remove(0);
+    rpc(method::CONV_ADD_MEMBERS_STAGED, &[&alice, GID, &carol]).unwrap();
+    rpc(method::CONV_COMMIT_DISCARD, &[&alice, GID]).unwrap();
 }
 
 pub fn mls_blob_rejects_wrong_key_and_tampering() {

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod chat;
 pub mod config;
+pub mod devices;
 pub mod error;
 pub mod hub;
 pub mod limiter;
@@ -46,6 +47,39 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/devices", post(chat::create_device))
         .route("/api/v1/devices/attach", post(chat::attach_device))
+        .route("/api/v1/devices", get(devices::list_devices))
+        .route("/api/v1/devices/me", get(devices::my_device))
+        .route(
+            "/api/v1/devices/me/link-request",
+            post(devices::link_request),
+        )
+        .route("/api/v1/devices/me/recover", post(devices::recover))
+        .route(
+            "/api/v1/devices/me/bundle",
+            get(devices::get_bundle).delete(devices::delete_bundle),
+        )
+        .route("/api/v1/devices/pending", get(devices::pending_devices))
+        .route(
+            "/api/v1/devices/{id}/key-package",
+            post(devices::take_device_key_package),
+        )
+        .route(
+            "/api/v1/devices/{id}/approve",
+            post(devices::approve_device),
+        )
+        .route("/api/v1/devices/{id}/revoke", post(devices::revoke_device))
+        .route(
+            "/api/v1/conversations/{id}/devices",
+            post(devices::add_devices),
+        )
+        .route(
+            "/api/v1/archive/{id}",
+            get(devices::get_archive).put(devices::put_archive),
+        )
+        .route(
+            "/api/v1/account/keys",
+            get(devices::get_account_keys).put(devices::put_account_keys),
+        )
         .route(
             "/api/v1/devices/me/key-packages",
             axum::routing::put(chat::put_key_packages),

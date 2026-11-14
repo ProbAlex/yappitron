@@ -36,19 +36,36 @@ pub struct Caller {
     pub device: Uuid,
 }
 
-/// A session that is bound to a registered device.
+/// A session bound to an APPROVED device: the only kind that may read or send messages.
 pub async fn caller(st: &AppState, headers: &HeaderMap) -> ApiResult<Caller> {
+    let (c, approved) = caller_any(st, headers).await?;
+    if !approved {
+        return Err(ApiError::Forbidden("this device is not approved yet"));
+    }
+    Ok(c)
+}
+
+/// A session bound to a pending or approved device; the flag says which.
+pub async fn caller_any(st: &AppState, headers: &HeaderMap) -> ApiResult<(Caller, bool)> {
     let s = auth::session(st, headers).await?;
     let device = s
         .device
         .ok_or(ApiError::Forbidden("register a device first"))?;
-    Ok(Caller {
-        account: s.account,
-        device,
-    })
+    let approved = match s.device_status.as_deref() {
+        Some("approved") => true,
+        Some("pending") => false,
+        _ => return Err(ApiError::Unauthorized),
+    };
+    Ok((
+        Caller {
+            account: s.account,
+            device,
+        },
+        approved,
+    ))
 }
 
-fn b64d(s: &str) -> ApiResult<Vec<u8>> {
+pub(crate) fn b64d(s: &str) -> ApiResult<Vec<u8>> {
     B64.decode(s)
         .map_err(|_| ApiError::BadRequest("invalid encoding"))
 }
@@ -72,10 +89,24 @@ pub async fn create_device(
     }
     let id = Uuid::new_v4();
     let mut tx = st.db.begin().await?;
-    sqlx::query("INSERT INTO devices (id, account_id, name) VALUES ($1, $2, $3)")
+    // The first device of an account is trusted by definition (the person just proved they own
+    // the account). Every later one must be approved by a device that is already trusted.
+    let approved_devices: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM devices WHERE account_id = $1 AND status = 'approved'",
+    )
+    .bind(s.account)
+    .fetch_one(&mut *tx)
+    .await?;
+    let status = if approved_devices == 0 {
+        "approved"
+    } else {
+        "pending"
+    };
+    sqlx::query("INSERT INTO devices (id, account_id, name, status) VALUES ($1, $2, $3, $4)")
         .bind(id)
         .bind(s.account)
         .bind(name)
+        .bind(status)
         .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE sessions SET device_id = $1 WHERE token_hash = $2")
@@ -84,7 +115,10 @@ pub async fn create_device(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(json!({ "device_id": id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "device_id": id, "status": status })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -93,29 +127,31 @@ pub struct AttachDevice {
 }
 
 /// Bind this session to a device the account already registered (a later login on the same
-/// installation).
+/// installation). Returns the device's status.
 pub async fn attach_device(
     State(st): State<AppState>,
     headers: HeaderMap,
     Json(b): Json<AttachDevice>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<Value>> {
     let s = auth::session(&st, &headers).await?;
-    let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND account_id = $2)",
-    )
-    .bind(b.device_id)
-    .bind(s.account)
-    .fetch_one(&st.db)
-    .await?;
-    if !owned {
-        return Err(ApiError::NotFound("no such device"));
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 AND account_id = $2")
+            .bind(b.device_id)
+            .bind(s.account)
+            .fetch_optional(&st.db)
+            .await?;
+    let status = status.ok_or(ApiError::NotFound("no such device"))?;
+    if status == "revoked" {
+        return Err(ApiError::Forbidden(
+            "this device was removed from the account",
+        ));
     }
     sqlx::query("UPDATE sessions SET device_id = $1 WHERE token_hash = $2")
         .bind(b.device_id)
         .bind(&s.token_hash)
         .execute(&st.db)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(json!({ "device_id": b.device_id, "status": status })))
 }
 
 // ---------- key packages ----------
@@ -130,7 +166,8 @@ pub async fn put_key_packages(
     headers: HeaderMap,
     Json(b): Json<PutKeyPackages>,
 ) -> ApiResult<StatusCode> {
-    let me = caller(&st, &headers).await?;
+    // A pending device uploads its key packages too: the approving device needs them to add it.
+    let (me, _) = caller_any(&st, &headers).await?;
     if b.key_packages.is_empty() || b.key_packages.len() > MAX_UPLOAD_KEY_PACKAGES {
         return Err(ApiError::BadRequest("upload 1-100 key packages at a time"));
     }
@@ -190,7 +227,9 @@ pub async fn take_key_packages(
         .await?
         .ok_or(ApiError::NotFound("no such user"))?;
     let devices: Vec<Uuid> =
-        sqlx::query_scalar("SELECT id FROM devices WHERE account_id = $1 AND id <> $2 ORDER BY id")
+        sqlx::query_scalar(
+            "SELECT id FROM devices WHERE account_id = $1 AND id <> $2 AND status = 'approved' ORDER BY id",
+        )
             .bind(account)
             .bind(me.device)
             .fetch_all(&st.db)
@@ -262,11 +301,12 @@ pub async fn create_conversation(
     }
 
     // Every recipient must be a device of the caller (not this one) or of the other person.
-    let rows: Vec<(Uuid, Uuid)> =
-        sqlx::query_as("SELECT id, account_id FROM devices WHERE id = ANY($1)")
-            .bind(&b.recipients)
-            .fetch_all(&st.db)
-            .await?;
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, account_id FROM devices WHERE id = ANY($1) AND status = 'approved'",
+    )
+    .bind(&b.recipients)
+    .fetch_all(&st.db)
+    .await?;
     let mut unique = b.recipients.clone();
     unique.sort();
     unique.dedup();

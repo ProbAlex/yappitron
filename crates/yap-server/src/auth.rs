@@ -575,22 +575,31 @@ pub struct Session {
     pub account: Uuid,
     /// Set once the client has registered or attached a device.
     pub device: Option<Uuid>,
+    /// `pending`, `approved` or `revoked` once a device is bound.
+    pub device_status: Option<String>,
     pub token_hash: Vec<u8>,
 }
 
 /// Resolve a raw session token.
 pub async fn session_for_token(st: &AppState, token: &str) -> ApiResult<Session> {
     let token_hash = hash_token(token)?;
-    let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-        "SELECT account_id, device_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
+    let row: Option<(Uuid, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "SELECT s.account_id, s.device_id, d.status
+         FROM sessions s LEFT JOIN devices d ON d.id = s.device_id
+         WHERE s.token_hash = $1 AND s.expires_at > now()",
     )
     .bind(&token_hash)
     .fetch_optional(&st.db)
     .await?;
-    let (account, device) = row.ok_or(ApiError::Unauthorized)?;
+    let (account, device, device_status) = row.ok_or(ApiError::Unauthorized)?;
+    // A removed device is signed out everywhere, even if a session row somehow survived.
+    if device_status.as_deref() == Some("revoked") {
+        return Err(ApiError::Unauthorized);
+    }
     Ok(Session {
         account,
         device,
+        device_status,
         token_hash,
     })
 }

@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod link;
 pub mod mls;
 pub mod typing;
 pub mod vault;

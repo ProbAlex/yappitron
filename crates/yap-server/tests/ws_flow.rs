@@ -5,85 +5,12 @@
 
 mod common;
 
-use std::net::SocketAddr;
-use std::time::Duration;
-
 use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use common::*;
-use futures_util::{SinkExt, StreamExt};
-use serde_json::{Value, json};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use serde_json::json;
 use yap_core::typing;
-
-struct Ws(WebSocketStream<MaybeTlsStream<TcpStream>>);
-
-impl Ws {
-    /// Connect, authenticate and wait for the replay to finish, so the test only sees what
-    /// happens afterwards. Panics unless the server answers `ready` and `synced`.
-    async fn connect(addr: SocketAddr, token: &str) -> Ws {
-        let mut ws = Ws::connect_keeping_replay(addr, token).await;
-        assert!(ws.next_of("synced", 5000).await.is_some(), "synced");
-        ws
-    }
-
-    /// Like `connect`, but returns right after `ready`: the replay is still to be read.
-    async fn connect_keeping_replay(addr: SocketAddr, token: &str) -> Ws {
-        let mut ws = Ws::raw(addr).await;
-        ws.send(json!({"t": "auth", "token": token})).await;
-        assert_eq!(ws.next(2000).await.expect("ready")["t"], "ready");
-        ws
-    }
-
-    async fn raw(addr: SocketAddr) -> Ws {
-        Ws(connect_async(format!("ws://{addr}/ws"))
-            .await
-            .expect("ws connect")
-            .0)
-    }
-
-    async fn send(&mut self, v: Value) {
-        self.0
-            .send(Message::Text(v.to_string().into()))
-            .await
-            .unwrap();
-    }
-
-    /// Next JSON frame within `ms`, or `None` on timeout / close.
-    async fn next(&mut self, ms: u64) -> Option<Value> {
-        loop {
-            match tokio::time::timeout(Duration::from_millis(ms), self.0.next()).await {
-                Ok(Some(Ok(Message::Text(t)))) => return serde_json::from_str(&t).ok(),
-                Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
-                _ => return None,
-            }
-        }
-    }
-
-    /// Next frame of type `t`, skipping others.
-    async fn next_of(&mut self, t: &str, ms: u64) -> Option<Value> {
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
-        while let Some(left) = deadline.checked_duration_since(tokio::time::Instant::now()) {
-            let v = self.next(left.as_millis() as u64 + 1).await?;
-            if v["t"] == t {
-                return Some(v);
-            }
-        }
-        None
-    }
-
-    /// Everything that arrives within `ms`.
-    async fn drain(&mut self, ms: u64) -> Vec<Value> {
-        let mut out = vec![];
-        while let Some(v) = self.next(ms).await {
-            out.push(v);
-        }
-        out
-    }
-}
 
 async fn accepted_pair(h: &Harness) -> (Client, Client, uuid::Uuid) {
     let (alice, bob) = (h.user("alice").await, h.user("bob").await);
@@ -140,7 +67,8 @@ async fn live_messages_are_pushed_to_the_other_side_only() {
             conv.as_bytes(),
             &B64.decode(push["d"].as_str().unwrap()).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .plaintext;
     assert_eq!(pt, b"pushed live");
     assert!(
         ws_alice.next_of("msg", 300).await.is_none(),
@@ -274,7 +202,7 @@ async fn offline_devices_get_a_replay_and_acks_stop_it() {
                 &B64.decode(m["d"].as_str().unwrap()).unwrap(),
             )
             .unwrap();
-        texts.push(String::from_utf8(pt).unwrap());
+        texts.push(String::from_utf8(pt.plaintext).unwrap());
     }
     assert_eq!(texts, ["one", "two", "three"], "in order");
     assert!(

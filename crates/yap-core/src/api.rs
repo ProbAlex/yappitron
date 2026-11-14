@@ -13,6 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use yap_proto::username;
 
 use crate::auth::{self, LoginInProgress, RegistrationInProgress};
+use crate::link;
 use crate::mls::Device;
 use crate::typing;
 use crate::vault;
@@ -31,6 +32,11 @@ pub mod method {
     pub const CONV_DECRYPT: u16 = 10;
     pub const CONV_APPLY_COMMIT: u16 = 11;
     pub const CONV_EPOCH: u16 = 12;
+    pub const CONV_ADD_MEMBERS_STAGED: u16 = 15;
+    pub const CONV_COMMIT_CONFIRM: u16 = 16;
+    pub const CONV_COMMIT_DISCARD: u16 = 17;
+    pub const KEY_PACKAGE_SIGNER: u16 = 18;
+    pub const DEVICE_SIGNER: u16 = 19;
     pub const TYPING_SEAL: u16 = 13;
     pub const TYPING_OPEN: u16 = 14;
     pub const AUTH_REGISTER_START: u16 = 20;
@@ -38,6 +44,10 @@ pub mod method {
     pub const AUTH_LOGIN_START: u16 = 22;
     pub const AUTH_LOGIN_FINISH: u16 = 23;
     pub const USERNAME_CANONICALIZE: u16 = 30;
+    pub const LINK_KEYPAIR: u16 = 42;
+    pub const LINK_SEAL: u16 = 43;
+    pub const LINK_OPEN: u16 = 44;
+    pub const FINGERPRINT: u16 = 45;
     pub const VAULT_SEAL: u16 = 40;
     pub const VAULT_OPEN: u16 = 41;
 }
@@ -212,8 +222,10 @@ fn dispatch(m: u16, a: &Args) -> Res {
         CONV_ENCRYPT => with_device(a.u32(0)?, |d| {
             Ok(vec![d.encrypt(a.bytes(1)?, a.bytes(2)?).map_err(err)?])
         }),
+        // result: plaintext, sender identity (`username/device-id`)
         CONV_DECRYPT => with_device(a.u32(0)?, |d| {
-            Ok(vec![d.decrypt(a.bytes(1)?, a.bytes(2)?).map_err(err)?])
+            let out = d.decrypt(a.bytes(1)?, a.bytes(2)?).map_err(err)?;
+            Ok(vec![out.plaintext, out.sender])
         }),
         CONV_APPLY_COMMIT => with_device(a.u32(0)?, |d| {
             d.apply_commit(a.bytes(1)?, a.bytes(2)?).map_err(err)?;
@@ -224,6 +236,41 @@ fn dispatch(m: u16, a: &Args) -> Res {
                 d.epoch(a.bytes(1)?).map_err(err)?.to_le_bytes().to_vec(),
             ])
         }),
+        // args: handle, group id, key package... ; builds a commit WITHOUT applying it
+        CONV_ADD_MEMBERS_STAGED => with_device(a.u32(0)?, |d| {
+            let kps = (2..a.0.len())
+                .map(|i| a.bytes(i))
+                .collect::<Result<Vec<_>, _>>()?;
+            let (commit, welcome) = d.add_members_staged(a.bytes(1)?, &kps).map_err(err)?;
+            Ok(vec![commit, welcome])
+        }),
+        CONV_COMMIT_CONFIRM => with_device(a.u32(0)?, |d| {
+            d.confirm_pending(a.bytes(1)?).map_err(err)?;
+            Ok(vec![])
+        }),
+        CONV_COMMIT_DISCARD => with_device(a.u32(0)?, |d| {
+            d.discard_pending(a.bytes(1)?).map_err(err)?;
+            Ok(vec![])
+        }),
+        KEY_PACKAGE_SIGNER => Ok(vec![
+            crate::mls::key_package_signer(a.bytes(0)?).map_err(err)?,
+        ]),
+        DEVICE_SIGNER => with_device(a.u32(0)?, |d| Ok(vec![d.signer_public()])),
+        LINK_KEYPAIR => {
+            let (secret, public) = link::keypair();
+            Ok(vec![secret.to_vec(), public.to_vec()])
+        }
+        LINK_SEAL => {
+            let public: [u8; 32] = a
+                .bytes(0)?
+                .try_into()
+                .map_err(|_| "public key must be 32 bytes".to_string())?;
+            Ok(vec![link::seal(&public, a.bytes(1)?).map_err(err)?])
+        }
+        LINK_OPEN => Ok(vec![link::open(&a.key32(0)?, a.bytes(1)?).map_err(err)?]),
+        FINGERPRINT => Ok(vec![
+            link::fingerprint(a.bytes(0)?, a.bytes(1)?).into_bytes(),
+        ]),
         TYPING_SEAL => with_device(a.u32(0)?, |d| {
             let gid = a.bytes(1)?;
             let key = d.typing_key(gid).map_err(err)?;
