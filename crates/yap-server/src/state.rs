@@ -5,9 +5,11 @@ use opaque_ke::rand::rngs::OsRng;
 use sqlx::PgPool;
 use yap_proto::auth::{YapOpaque, opaque_ke};
 
+use crate::blobs::BlobStore;
 use crate::hub::Hub;
 use crate::limiter::RateLimiter;
 use crate::mail::Mailer;
+use crate::previews::LinkFetcher;
 use crate::secrets::Secrets;
 
 pub type Setup = ServerSetup<YapOpaque>;
@@ -25,6 +27,10 @@ pub struct AppState {
     pub domain: Arc<str>,
     /// How many emailed codes one address may request per hour (in-memory counters).
     pub code_limit_per_ip: u32,
+    /// Encrypted attachments; `None` turns the feature off.
+    pub blobs: Option<Arc<BlobStore>>,
+    /// Fetches pages for link previews; `None` turns the feature off.
+    pub links: Option<Arc<LinkFetcher>>,
 }
 
 impl AppState {
@@ -45,7 +51,21 @@ impl AppState {
             hub: Arc::new(Hub::default()),
             domain: domain.into(),
             code_limit_per_ip: 10,
+            blobs: None,
+            links: None,
         })
+    }
+
+    /// Turn on encrypted attachments, stored under the store's directory.
+    pub fn with_blobs(mut self, store: BlobStore) -> Self {
+        self.blobs = Some(Arc::new(store));
+        self
+    }
+
+    /// Turn on link previews (the gateway fetches pages on the sender's behalf).
+    pub fn with_link_previews(mut self, fetcher: LinkFetcher) -> Self {
+        self.links = Some(Arc::new(fetcher));
+        self
     }
 
     /// Override how many emailed codes one address may request per hour (default 10).

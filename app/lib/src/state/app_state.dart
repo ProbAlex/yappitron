@@ -13,8 +13,24 @@ import '../core/codec.dart';
 import '../core/yap_core.dart';
 import '../data/local_store.dart';
 import 'ids.dart';
+import 'image_size.dart';
+import 'links.dart';
 import 'models.dart';
 import 'recovery_key.dart';
+
+/// Largest file that can be sent (the server enforces its own limit too).
+const maxAttachmentBytes = 100 * 1024 * 1024;
+const maxAttachmentsPerMessage = 10;
+
+/// A file the person picked to send.
+class OutgoingFile {
+  OutgoingFile({required this.name, required this.mime, required this.bytes, this.width, this.height});
+  final String name;
+  final String mime;
+  final Uint8List bytes;
+  final int? width;
+  final int? height;
+}
 
 enum Phase {
   booting,
@@ -237,6 +253,7 @@ class YapApp extends ChangeNotifier {
     username = name;
     notice = null;
     _localKey = await store.secretKey('local.$name');
+    linkPreviews = await store.getString('prefs.linkPreviews.$name') == '1';
     await _attachDevice(name);
     await _loadLocal(name);
     if (_deviceState == DeviceState.pending || _histKey == null) {
@@ -862,6 +879,8 @@ class YapApp extends ChangeNotifier {
           mine: mine,
           time: DateTime.fromMillisecondsSinceEpoch(j['ts'] as int),
           text: j['body'] as String,
+          attachments: Attachment.listFromJson(j['att']).take(maxAttachmentsPerMessage).toList(),
+          previews: LinkPreview.listFromJson(j['pv']).take(3).toList(),
         );
         if (!c.hasSeq(e.seq)) {
           c.addMessage(m);
@@ -908,7 +927,13 @@ class YapApp extends ChangeNotifier {
   Uint8List _sealArchive(String conv, ChatMessage m) => core.vaultSeal(
         _histKey!,
         'arch:$conv:${m.seq}',
-        Uint8List.fromList(utf8.encode(jsonEncode({'f': m.mine ? 'me' : 'them', 't': m.time.millisecondsSinceEpoch, 'x': m.text}))),
+        Uint8List.fromList(utf8.encode(jsonEncode({
+          'f': m.mine ? 'me' : 'them',
+          't': m.time.millisecondsSinceEpoch,
+          'x': m.text,
+          if (m.attachments.isNotEmpty) 'a': [for (final a in m.attachments) a.toJson()],
+          if (m.previews.isNotEmpty) 'p': [for (final p in m.previews) p.toJson()],
+        }))),
       );
 
   /// Upload what this device has read to the account's archive (sealed under the history key,
@@ -964,6 +989,8 @@ class YapApp extends ChangeNotifier {
             mine: j['f'] == 'me',
             time: DateTime.fromMillisecondsSinceEpoch(j['t'] as int),
             text: j['x'] as String,
+            attachments: Attachment.listFromJson(j['a']).take(maxAttachmentsPerMessage).toList(),
+            previews: LinkPreview.listFromJson(j['p']).take(3).toList(),
           ));
           changed = true;
         } on CoreException {
@@ -1093,18 +1120,109 @@ class YapApp extends ChangeNotifier {
   Future<void> send(Conversation c, String text) async {
     final body = text.trim();
     if (body.isEmpty) return;
+    _checkCanSend(c);
+    await _post(c, body, const [], await _previewsFor(c, body));
+  }
+
+  // ---------------------------------------------------------- link previews
+
+  /// Off until the person turns it on: building a card means the gateway fetches the page, so
+  /// the gateway learns that address (never who it is sent to). See docs/MEDIA.md.
+  bool linkPreviews = false;
+
+  Future<void> setLinkPreviews(bool on) async {
+    linkPreviews = on;
+    await store.putString('prefs.linkPreviews.$username', on ? '1' : '0');
+    notifyListeners();
+  }
+
+  /// A card for the first link in [text], or none. Never blocks sending for long and never
+  /// fails the send: a message goes out without a card if the page cannot be fetched.
+  Future<List<LinkPreview>> _previewsFor(Conversation c, String text) async {
+    if (!linkPreviews) return const [];
+    final urls = extractUrls(text);
+    if (urls.isEmpty) return const [];
+    try {
+      final p = await api.linkPreview(urls.first.toString()).timeout(const Duration(seconds: 5));
+      Attachment? image;
+      final bytes = p.imageBytes;
+      if (bytes != null && p.imageMime != null) {
+        // The picture goes up encrypted like any attachment, so the recipient fetches it from
+        // our server and never contacts the linked site.
+        final key = randomBytes(32);
+        final id = await api.uploadBlob(c.id, core.blobSeal(key, bytes));
+        final size = await imageSize(bytes);
+        image = Attachment(id: id, key: key, name: 'preview', mime: p.imageMime!, size: bytes.length, width: size?.$1, height: size?.$2);
+      }
+      return [LinkPreview(url: urls.first.toString(), title: p.title, description: p.description, site: p.site, image: image)];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Send files (with an optional caption) as one message. Each file is encrypted on this
+  /// device under its own random key and only the ciphertext is uploaded.
+  Future<void> sendFiles(Conversation c, List<OutgoingFile> files, {String caption = '', List<LinkPreview> previews = const []}) async {
+    if (files.isEmpty) return;
+    if (files.length > maxAttachmentsPerMessage) {
+      throw ApiException(0, 'You can send up to $maxAttachmentsPerMessage files at once.');
+    }
+    for (final f in files) {
+      if (f.bytes.length > maxAttachmentBytes) {
+        throw ApiException(0, '"${f.name}" is too large (the limit is ${maxAttachmentBytes ~/ (1024 * 1024)} MB).');
+      }
+    }
+    _checkCanSend(c);
+    final uploaded = <String>[];
+    final atts = <Attachment>[];
+    busy.add(c.id);
+    notifyListeners();
+    try {
+      for (final f in files) {
+        final key = randomBytes(32);
+        final id = await api.uploadBlob(c.id, core.blobSeal(key, f.bytes));
+        uploaded.add(id);
+        atts.add(Attachment(id: id, key: key, name: f.name, mime: f.mime, size: f.bytes.length, width: f.width, height: f.height));
+      }
+      await _post(c, caption.trim(), atts, previews);
+    } catch (_) {
+      // Do not leave orphaned ciphertext on the server.
+      for (final id in uploaded) {
+        unawaited(api.deleteBlob(id).catchError((Object _) {}));
+      }
+      rethrow;
+    } finally {
+      busy.remove(c.id);
+      notifyListeners();
+    }
+  }
+
+  /// Conversations with an upload in progress.
+  final Set<String> busy = {};
+
+  void _checkCanSend(Conversation c) {
     if (c.stale) {
       throw ApiException(0, 'This chat can no longer receive messages on this device. Start a new chat with ${c.peer}.');
     }
     if (c.state == ConversationState.declined) {
       throw ApiException(403, 'The other person declined this conversation');
     }
+  }
+
+  Future<void> _post(Conversation c, String body, List<Attachment> atts, List<LinkPreview> previews) async {
+    _checkCanSend(c);
     final now = DateTime.now();
-    final payload = jsonEncode({'v': 1, 'ts': now.millisecondsSinceEpoch, 'body': body});
+    final payload = jsonEncode({
+      'v': 2,
+      'ts': now.millisecondsSinceEpoch,
+      'body': body,
+      if (atts.isNotEmpty) 'att': [for (final a in atts) a.toJson()],
+      if (previews.isNotEmpty) 'pv': [for (final p in previews) p.toJson()],
+    });
     final ct = core.convEncrypt(_device!, uuidBytes(c.id), Uint8List.fromList(utf8.encode(payload)));
     await _saveDevice();
     final seq = await api.postMessage(c.id, 1, ct);
-    final m = ChatMessage(seq: seq, mine: true, time: now, text: body);
+    final m = ChatMessage(seq: seq, mine: true, time: now, text: body, attachments: atts, previews: previews);
     c.addMessage(m);
     c.sentSeqs.add(seq);
     c.liveDraft = null;
@@ -1117,6 +1235,45 @@ class YapApp extends ChangeNotifier {
     notifyListeners();
     unawaited(_flushArchive());
   }
+
+  // ------------------------------------------------------------ attachments
+
+  final _blobCache = <String, Uint8List>{};
+  final _blobLoading = <String, Future<Uint8List>>{};
+  int _blobCacheBytes = 0;
+
+  /// The decrypted bytes of an attachment: downloaded and decrypted on first use, then kept in
+  /// memory (up to [_blobCacheLimit]). Throws [ApiException] if it cannot be fetched, or if the
+  /// data does not match its key (it was tampered with).
+  Future<Uint8List> loadAttachment(Attachment a) {
+    final hit = _blobCache.remove(a.id);
+    if (hit != null) {
+      _blobCache[a.id] = hit; // most recently used
+      return Future.value(hit);
+    }
+    return _blobLoading.putIfAbsent(a.id, () async {
+      try {
+        final sealed = await api.downloadBlob(a.id);
+        final Uint8List plain;
+        try {
+          plain = core.blobOpen(a.key, sealed);
+        } on CoreException {
+          throw ApiException(0, 'This file is damaged and cannot be opened');
+        }
+        _blobCache[a.id] = plain;
+        _blobCacheBytes += plain.length;
+        while (_blobCacheBytes > _blobCacheLimit && _blobCache.length > 1) {
+          final oldest = _blobCache.keys.first;
+          _blobCacheBytes -= _blobCache.remove(oldest)!.length;
+        }
+        return plain;
+      } finally {
+        _blobLoading.remove(a.id);
+      }
+    });
+  }
+
+  static const _blobCacheLimit = 96 * 1024 * 1024;
 
   @override
   void dispose() {

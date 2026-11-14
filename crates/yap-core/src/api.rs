@@ -13,6 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use yap_proto::username;
 
 use crate::auth::{self, LoginInProgress, RegistrationInProgress};
+use crate::blob;
 use crate::link;
 use crate::mls::Device;
 use crate::typing;
@@ -51,6 +52,8 @@ pub mod method {
     pub const DERIVE_KEY: u16 = 46;
     pub const VAULT_SEAL: u16 = 40;
     pub const VAULT_OPEN: u16 = 41;
+    pub const BLOB_SEAL: u16 = 50;
+    pub const BLOB_OPEN: u16 = 51;
 }
 
 enum Obj {
@@ -340,6 +343,9 @@ fn dispatch(m: u16, a: &Args) -> Res {
         VAULT_OPEN => Ok(vec![
             vault::open(&a.key32(0)?, a.bytes(1)?, a.bytes(2)?).map_err(err)?,
         ]),
+        // args: key32, plaintext file / sealed file
+        BLOB_SEAL => Ok(vec![blob::seal(&a.key32(0)?, a.bytes(1)?)]),
+        BLOB_OPEN => Ok(vec![blob::open(&a.key32(0)?, a.bytes(1)?).map_err(err)?]),
         other => Err(format!("unknown method {other}")),
     }
 }

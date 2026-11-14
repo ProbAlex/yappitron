@@ -238,3 +238,60 @@ test('emoji and non-Latin scripts render from our own fonts, never from a third 
   expect(cspErrors).toEqual([]);
   await ctx.close();
 });
+
+test('a photo and a file are sent through the browser, shown inline / downloadable, with no policy violations', async ({ browser }) => {
+  const alice = await newUser(browser, 'alice');
+  const bob = await newUser(browser, 'bob');
+  const cspErrors: string[] = [];
+  for (const u of [alice, bob]) {
+    u.page.on('console', (m) => { if (/Content Security Policy|violates/.test(m.text())) cspErrors.push(m.text().slice(0, 160)); });
+  }
+
+  // An accepted conversation (same steps as the chat test).
+  await button(alice.page, /New chat/).click();
+  await fill(alice.page, 'Their username', bob.name);
+  await button(alice.page, 'Start chat').click();
+  await fill(alice.page, `Message ${bob.name}`, 'hi');
+  await alice.page.keyboard.press('Enter');
+  await bob.page.getByRole('button', { name: /hi/ }).first().click();
+  await button(bob.page, 'Accept').click();
+  await expect(bob.page.getByRole('textbox', { name: `Message ${alice.name}` })).toBeEnabled();
+
+  // A real 4x4 PNG (so the browser can decode and show it) and a small text file.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z8DAAMb//0MZBDkA+EkT7YP5CsUAAAAASUVORK5CYII=', 'base64');
+  const note = Buffer.from('meet at noon — bring the plans');
+
+  async function attach(page: Page, name: string, mimeType: string, buffer: Buffer, caption: string) {
+    const chooser = page.waitForEvent('filechooser');
+    await button(page, 'Attach a photo, video or file').click();
+    await (await chooser).setFiles({ name, mimeType, buffer });
+    await expect(page.getByText(`Send to`).first()).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
+    await page.getByRole('textbox', { name: 'Caption (optional)' }).fill(caption);
+    await button(page, 'Send').click();
+  }
+
+  await attach(alice.page, 'pixel.png', 'image/png', png, 'look at this');
+  await expect(bob.page.getByLabel('They said: look at this')).toBeVisible();
+  // The photo is shown inline (decrypted in the browser).
+  await expect(bob.page.getByLabel('Photo pixel.png')).toBeVisible();
+
+  await attach(alice.page, 'notes.txt', 'text/plain', note, 'and the notes');
+  await expect(bob.page.getByLabel('They said: and the notes')).toBeVisible();
+
+  // Bob saves the file: what he downloads is exactly what Alice picked.
+  const download = bob.page.waitForEvent('download');
+  await bob.page.getByRole('button', { name: new RegExp(`File notes.txt, ${note.length} B`) }).click();
+  const saved = await download;
+  expect(saved.suggestedFilename()).toBe('notes.txt');
+  const path = await saved.path();
+  expect(require('node:fs').readFileSync(path).equals(note)).toBe(true);
+
+  // Alice sees her own sent file too, and the chat list shows what the last message was.
+  await expect(alice.page.getByLabel('Photo pixel.png')).toBeVisible();
+  expect(cspErrors).toEqual([]);
+  expect(foreignRequests, 'the app must never contact a third party').toEqual([]);
+  await alice.ctx.close();
+  await bob.ctx.close();
+});

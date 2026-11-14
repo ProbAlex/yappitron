@@ -37,6 +37,8 @@ YAP_DOMAIN=127.0.0.1 \
 YAP_SERVER_SECRET=$(openssl rand -base64 48) \
 YAP_DEV_MAIL_FILE="$MAIL" \
 YAP_CODE_LIMIT_PER_IP=1000 \
+YAP_BLOB_DIR="$WORK/blobs" \
+YAP_DEV_LINK_PREVIEW_PRIVATE=1 \
 YAP_WEB_DIR="$ROOT/app/build/web" \
 RUST_LOG=warn \
   ./target/debug/yap-server >"$WORK/gateway.log" 2>&1 &
@@ -53,7 +55,7 @@ if [ "${E2E_ONLY:-all}" != web ]; then
   # The same flows, driven through the Dart app logic on the VM with the real Rust core over FFI.
   command -v flutter >/dev/null || export PATH="$HOME/dev/flutter/bin:$PATH"
   cargo build -p yap-ffi
-  (cd app && YAP_E2E_SERVER="http://127.0.0.1:$PORT" YAP_E2E_MAIL_FILE="$MAIL" YAP_E2E_PG="$PG" \
+  (cd app && YAP_E2E_SERVER="http://127.0.0.1:$PORT" YAP_E2E_MAIL_FILE="$MAIL" YAP_E2E_PG="$PG" YAP_E2E_BLOB_DIR="$WORK/blobs" \
     YAP_NATIVE_LIB="$ROOT/target/debug/libyap_ffi.so" flutter test test/e2e_native_test.dart) || STATUS=1
 fi
 if [ $STATUS -ne 0 ]; then echo "--- gateway log ---"; cat "$WORK/gateway.log"; fi

@@ -11,6 +11,7 @@ pub enum ApiError {
     NotFound(&'static str),
     Conflict(&'static str),
     TooManyRequests,
+    TooLarge(&'static str),
     /// Details are deliberately not logged: they could contain identifiers.
     Internal(&'static str),
 }
@@ -24,6 +25,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+            ApiError::TooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m),
             ApiError::Internal(kind) => {
                 tracing::error!(kind, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error")

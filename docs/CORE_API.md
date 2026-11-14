@@ -56,6 +56,8 @@ Devices and in-progress OPAQUE exchanges live inside the core and are named by `
 | 44 | `LINK_OPEN` | secret, sealed | plaintext |
 | 45 | `FINGERPRINT` | signature public key, link public key | `A1B2-C3D4-E5F6-0718-293A` (80 bits) |
 | 46 | `DERIVE_KEY` | secret, label | 32-byte key (HKDF-SHA256; unrelated per label) |
+| 50 | `BLOB_SEAL` | key32, file bytes | sealed file (chunked ChaCha20-Poly1305; see [MEDIA.md](MEDIA.md)) |
+| 51 | `BLOB_OPEN` | key32, sealed file | file bytes; error if the key is wrong or the data was changed |
 
 ## Persistence
 

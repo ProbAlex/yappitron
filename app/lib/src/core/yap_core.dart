@@ -39,6 +39,8 @@ abstract final class _M {
   static const deriveKey = 46;
   static const vaultSeal = 40;
   static const vaultOpen = 41;
+  static const blobSeal = 50;
+  static const blobOpen = 51;
 }
 
 Uint8List _s(String s) => Uint8List.fromList(utf8.encode(s));
@@ -179,4 +181,11 @@ class YapCore {
 
   Uint8List vaultOpen(Uint8List key, String context, Uint8List sealed) =>
       _call(_M.vaultOpen, [key, _s(context), sealed]).first;
+
+  /// Encrypt a file under a fresh random [key] (see `yap_core::blob`); the result is what gets
+  /// uploaded. [blobOpen] reverses it and throws [CoreException] if the key is wrong or the data
+  /// was changed.
+  Uint8List blobSeal(Uint8List key, Uint8List file) => _call(_M.blobSeal, [key, file]).first;
+
+  Uint8List blobOpen(Uint8List key, Uint8List sealed) => _call(_M.blobOpen, [key, sealed]).first;
 }

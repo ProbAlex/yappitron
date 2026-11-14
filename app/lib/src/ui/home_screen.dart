@@ -128,6 +128,7 @@ class _ConversationList extends StatelessWidget {
             icon: Badge(isLabelVisible: app.pendingLinks.isNotEmpty, child: const Icon(Icons.more_vert)),
             onSelected: (v) {
               if (v == 'logout') app.logout();
+              if (v == 'previews') _toggleLinkPreviews(context, app);
               if (v == 'devices') {
                 Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => DevicesScreen(app: app)));
               }
@@ -137,6 +138,7 @@ class _ConversationList extends StatelessWidget {
                 value: 'devices',
                 child: Text(app.pendingLinks.isEmpty ? 'Devices' : 'Devices (${app.pendingLinks.length} waiting)'),
               ),
+              PopupMenuItem(value: 'previews', child: Text(app.linkPreviews ? 'Link previews: on' : 'Link previews: off')),
               const PopupMenuItem(value: 'logout', child: Text('Log out')),
             ],
           ),
@@ -248,7 +250,7 @@ class _ChatTile extends StatelessWidget {
             ? 'Declined'
             : c.stale && c.last == null
                 ? 'Read-only'
-                : (c.last == null ? 'No messages yet' : '${c.last!.mine ? 'You: ' : ''}${c.last!.text}');
+                : (c.last == null ? 'No messages yet' : '${c.last!.mine ? 'You: ' : ''}${c.last!.summary}');
     return ListTile(
       selected: selected,
       leading: _Avatar(c.peer),
@@ -281,7 +283,7 @@ class _RequestTile extends StatelessWidget {
     return ListTile(
       leading: _Avatar(c.peer),
       title: Text(c.peer),
-      subtitle: Text(c.last?.text ?? 'wants to chat with you', maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(c.last?.summary ?? 'wants to chat with you', maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: onOpen,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -337,3 +339,30 @@ class _LinkDot extends StatelessWidget {
 /// Whether this build runs on a touch-first platform (used for composer behaviour).
 bool get isTouchPlatform =>
     !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
+
+/// Turning link previews on needs an informed yes: the server fetches the page for the card.
+Future<void> _toggleLinkPreviews(BuildContext context, YapApp app) async {
+  if (app.linkPreviews) {
+    await app.setLinkPreviews(false);
+    return;
+  }
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Show link previews?'),
+      content: const Text(
+        'When you send a link, your app asks the Yappitron server to load that page so a preview '
+        'card (title, summary, picture) can be added to your message.\n\n'
+        '• The server sees the link you are previewing, but not who you send it to. It stores nothing.\n'
+        '• The card is end-to-end encrypted like the rest of the message.\n'
+        '• The person you send it to never contacts the website, so it cannot see their address.\n\n'
+        'If you leave this off, links are still tappable and nothing about them reaches the server.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep off')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Turn on')),
+      ],
+    ),
+  );
+  if (ok == true) await app.setLinkPreviews(true);
+}

@@ -149,6 +149,20 @@ the core reports those as `own message` and clients skip them. Clients de-duplic
 connections: never stored, at most 20 per second per connection, at most 4 KB, and dropped for
 non-members or while a request is pending.
 
+## Attachments and link previews
+
+See [MEDIA.md](MEDIA.md) for the design.
+
+- `PUT /api/v1/conversations/{id}/blobs` (raw encrypted bytes, `Content-Length` honest or not;
+  the server enforces the cap while reading) -> `{id, size}`. 404 if attachments are off,
+  403 if not a joined member / declined / over the pre-acceptance limit, 413 if too large or the
+  account's quota is reached, 429 if uploading too fast.
+- `GET /api/v1/blobs/{id}` -> the encrypted bytes. 404 for an unknown file *and* for one you may
+  not see.
+- `DELETE /api/v1/blobs/{id}` -> 204; only the uploader.
+- `POST /api/v1/link-preview` `{url}` -> `{url, title, description, site, image?: {mime, data}}`
+  (`data` base64url). 400 with a plain reason if the page cannot be previewed; 404 if disabled.
+
 ## Other
 
 - `GET /api/v1/me` -> `{username}` (needs a session)
@@ -157,5 +171,5 @@ non-members or while a request is pending.
 ## What the server stores
 
 Per account: id, username, an HMAC of the email, and the OPAQUE record. Per device: a label and
-its pending key packages. Per conversation: members and the encrypted log. No plaintext email,
+its pending key packages. Per conversation: members and the encrypted log. Per attachment: a random id, its conversation, the uploading account and its size (the encrypted file itself is on disk). No plaintext email,
 no IP address, no creation/login/message timestamps, no message sender. See [THREAT_MODEL.md](THREAT_MODEL.md).

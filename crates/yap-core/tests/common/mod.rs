@@ -562,6 +562,26 @@ pub fn api_end_to_end_chat_and_typing() {
     );
 }
 
+/// Attachments through the byte API (the same entry point the app and the browser use).
+pub fn blob_seals_files_through_the_byte_api() {
+    let key = [5u8; 32];
+    // More than one 64 KiB chunk, so chunking is exercised on every platform.
+    let file: Vec<u8> = (0..150_000u32).map(|i| (i % 253) as u8).collect();
+    let sealed = rpc(method::BLOB_SEAL, &[&key, &file]).unwrap().remove(0);
+    assert_eq!(sealed.len(), yap_core::blob::sealed_len(file.len()));
+    assert!(!sealed.windows(32).any(|w| w == &file[1000..1032]));
+    assert_eq!(rpc(method::BLOB_OPEN, &[&key, &sealed]).unwrap()[0], file);
+    // Wrong key, a flipped byte, and a dropped tail are all refused with an error, not a panic.
+    assert!(rpc(method::BLOB_OPEN, &[&[6u8; 32], &sealed]).is_err());
+    let mut flipped = sealed.clone();
+    flipped[70_000] ^= 1;
+    assert!(rpc(method::BLOB_OPEN, &[&key, &flipped]).is_err());
+    assert!(rpc(method::BLOB_OPEN, &[&key, &sealed[..sealed.len() - 70_000]]).is_err());
+    // An empty file is valid.
+    let empty = rpc(method::BLOB_SEAL, &[&key, b""]).unwrap().remove(0);
+    assert_eq!(rpc(method::BLOB_OPEN, &[&key, &empty]).unwrap()[0], b"");
+}
+
 pub fn vault_seals_and_binds_to_key_and_context() {
     let key = [9u8; 32];
     let sealed = rpc(method::VAULT_SEAL, &[&key, b"history:conv-1", b"hello"])

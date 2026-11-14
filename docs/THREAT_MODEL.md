@@ -12,6 +12,8 @@
 - Usernames, and which accounts have accepted contact with each other.
 - Which devices are connected at a given moment (held in RAM, never persisted).
 - Message sizes and the order in which ciphertexts arrive.
+- That an attachment exists, its size, its conversation and uploading account. Not its content, name, type or dimensions.
+- If a sender turns link previews on: the web address they preview, at that moment (not the recipient, nothing stored). Off by default; see [MEDIA.md](MEDIA.md).
 - IP addresses of connecting clients, transiently. They are not logged.
 
 ## On the device
@@ -54,6 +56,7 @@
 ## Known limits
 
 - **Web client**: the server delivers the JavaScript, so a compromised server could ship malicious code. Mitigations: strict CSP, self-hosted assets, published source.
+- **File sizes**: attachments are not padded, so a file's size is visible to the server and to anyone watching the network.
 - **Traffic analysis**: timing and size of live-typing frames can leak information. Frames are padded to size buckets; timing is batched at 200 ms.
 - **Third parties**: the SMTP relay sees recipient addresses and send times of verification emails. Push services (v0.2) will see that a notification was sent, not its content.
 - **No audit**: this code has not been independently reviewed.

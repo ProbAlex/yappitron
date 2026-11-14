@@ -62,6 +62,16 @@ class ConversationDto {
   final List<({String username, String state})> members;
 }
 
+class LinkPreviewDto {
+  LinkPreviewDto({required this.url, this.title, this.description, this.site, this.imageMime, this.imageBytes});
+  final String url;
+  final String? title;
+  final String? description;
+  final String? site;
+  final String? imageMime;
+  final Uint8List? imageBytes;
+}
+
 class ApiClient {
   ApiClient(String baseUrl, {http.Client? client})
       : base = Uri.parse(baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl),
@@ -117,6 +127,71 @@ class ApiClient {
       throw ApiException(streamed.statusCode, (json['error'] as String?) ?? 'Request failed (${streamed.statusCode})');
     }
     return json;
+  }
+
+  // ----- attachments (encrypted files; see docs/MEDIA.md) -----
+
+  /// Upload an already-encrypted file into a conversation. Returns the blob id.
+  Future<String> uploadBlob(String conversationId, Uint8List sealed) async {
+    final request = http.Request('PUT', base.replace(path: '/api/v1/conversations/$conversationId/blobs'))
+      ..bodyBytes = sealed;
+    request.headers['content-type'] = 'application/octet-stream';
+    if (token != null) request.headers['authorization'] = 'Bearer $token';
+    final http.StreamedResponse streamed;
+    try {
+      streamed = await _http.send(request);
+    } catch (e) {
+      throw ApiException(0, 'Cannot reach the server', cause: e);
+    }
+    final text = await streamed.stream.bytesToString();
+    Map<String, dynamic> json = const {};
+    try {
+      json = jsonDecode(text) as Map<String, dynamic>;
+    } catch (_) {}
+    if (streamed.statusCode >= 400) {
+      throw ApiException(streamed.statusCode, (json['error'] as String?) ?? 'Upload failed (${streamed.statusCode})');
+    }
+    return json['id'] as String;
+  }
+
+  /// Download an encrypted file (still encrypted).
+  Future<Uint8List> downloadBlob(String id) async {
+    for (var attempt = 0;; attempt++) {
+      final request = http.Request('GET', base.replace(path: '/api/v1/blobs/$id'));
+      if (token != null) request.headers['authorization'] = 'Bearer $token';
+      try {
+        final streamed = await _http.send(request);
+        final bytes = await streamed.stream.toBytes();
+        if (streamed.statusCode >= 400) {
+          throw ApiException(streamed.statusCode, streamed.statusCode == 404 ? 'This file is no longer available' : 'Download failed (${streamed.statusCode})');
+        }
+        return bytes;
+      } on ApiException {
+        rethrow;
+      } catch (e) {
+        if (attempt == 0) continue; // a stale keep-alive connection: retry once
+        throw ApiException(0, 'Cannot reach the server', cause: e);
+      }
+    }
+  }
+
+  Future<void> deleteBlob(String id) => _send('DELETE', '/api/v1/blobs/$id');
+
+  // ----- link previews -----
+
+  /// Ask the gateway to fetch a page for a link-preview card. The gateway sees the address (and
+  /// nothing about who it is for); see docs/MEDIA.md. Throws [ApiException] with a plain reason.
+  Future<LinkPreviewDto> linkPreview(String url) async {
+    final r = await _send('POST', '/api/v1/link-preview', {'url': url}, false);
+    final img = r['image'];
+    return LinkPreviewDto(
+      url: r['url'] as String,
+      title: r['title'] as String?,
+      description: r['description'] as String?,
+      site: r['site'] as String?,
+      imageMime: img is Map ? img['mime'] as String : null,
+      imageBytes: img is Map ? b64d(img['data'] as String) : null,
+    );
   }
 
   // ----- signup / login / reset -----

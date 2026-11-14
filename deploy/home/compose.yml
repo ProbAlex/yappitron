@@ -54,7 +54,11 @@ services:
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM}
+      # Encrypted attachments. Point the volume at a NAS mount in production.
+      YAP_BLOB_DIR: /var/lib/yappitron/blobs
       RUST_LOG: warn
+    volumes:
+      - blobs:/var/lib/yappitron/blobs
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,5 +81,6 @@ services:
     logging: *logging
 
 volumes:
+  blobs:
   pgdata:
   caddy_data:

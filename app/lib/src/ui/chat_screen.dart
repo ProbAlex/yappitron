@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import '../api/api_client.dart';
 import '../state/app_state.dart';
 import '../state/models.dart';
+import 'attachments.dart';
 import 'format.dart';
 import 'home_screen.dart' show isTouchPlatform;
 
@@ -58,6 +59,22 @@ class _ChatScreenState extends State<ChatScreen> {
     _focus.requestFocus();
   }
 
+  Future<void> _attach(Conversation c) async {
+    try {
+      final files = await pickOutgoingFiles();
+      if (files.isEmpty || !mounted) return;
+      final caption = await confirmSend(context, files, c.peer, _text.text);
+      if (caption == null) return;
+      if (caption.trim() == _text.text.trim()) _text.clear();
+      await app.sendFiles(c, files, caption: caption);
+      if (mounted) setState(() => _error = null);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Could not send the file');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -97,7 +114,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   content: Text('This person declined your message request.'),
                   actions: [SizedBox.shrink()],
                 ),
-              Expanded(child: _Messages(conversation: c, scroll: _scroll)),
+              Expanded(child: _Messages(app: app, conversation: c, scroll: _scroll)),
+              if (app.busy.contains(c.id)) const LinearProgressIndicator(),
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -114,6 +132,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         : 'Message ${c.peer}',
                 onChanged: (v) => app.onDraftChanged(c, v),
                 onSend: () => _send(c),
+                onAttach: () => _attach(c),
               ),
             ],
           ),
@@ -164,7 +183,8 @@ class _RequestBanner extends StatelessWidget {
 }
 
 class _Messages extends StatelessWidget {
-  const _Messages({required this.conversation, required this.scroll});
+  const _Messages({required this.app, required this.conversation, required this.scroll});
+  final YapApp app;
   final Conversation conversation;
   final ScrollController scroll;
 
@@ -184,14 +204,15 @@ class _Messages extends StatelessWidget {
         if (draft != null && i == 0) return _LiveDraft(peer: c.peer, text: draft);
         final m = msgs[msgs.length - 1 - (i - extra)];
         final prev = (msgs.length - 2 - (i - extra)) >= 0 ? msgs[msgs.length - 2 - (i - extra)] : null;
-        return _Bubble(message: m, showTime: prev == null || m.time.difference(prev.time).inMinutes >= 5);
+        return _Bubble(app: app, message: m, showTime: prev == null || m.time.difference(prev.time).inMinutes >= 5);
       },
     );
   }
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, required this.showTime});
+  const _Bubble({required this.app, required this.message, required this.showTime});
+  final YapApp app;
   final ChatMessage message;
   final bool showTime;
 
@@ -210,7 +231,7 @@ class _Bubble extends StatelessWidget {
         Align(
           alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
           child: Semantics(
-            label: '${mine ? 'You' : 'They'} said: ${message.text}',
+            label: '${mine ? 'You' : 'They'} said: ${message.summary}',
             child: Container(
               margin: const EdgeInsets.symmetric(vertical: 2),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -224,7 +245,16 @@ class _Bubble extends StatelessWidget {
                   bottomRight: Radius.circular(mine ? 4 : 18),
                 ),
               ),
-              child: SelectableText(message.text),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (message.attachments.isNotEmpty) AttachmentList(app: app, attachments: message.attachments),
+                  if (message.text.isNotEmpty) LinkText(message.text),
+                  for (final p in message.previews)
+                    Padding(padding: const EdgeInsets.only(top: 6), child: LinkPreviewCard(app: app, preview: p)),
+                ],
+              ),
             ),
           ),
         ),
@@ -289,6 +319,7 @@ class _Composer extends StatelessWidget {
     required this.hint,
     required this.onChanged,
     required this.onSend,
+    required this.onAttach,
   });
   final TextEditingController controller;
   final FocusNode focus;
@@ -296,6 +327,7 @@ class _Composer extends StatelessWidget {
   final String hint;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
+  final VoidCallback onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -305,6 +337,11 @@ class _Composer extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            IconButton(
+              tooltip: 'Attach a photo, video or file',
+              onPressed: enabled ? onAttach : null,
+              icon: const Icon(Icons.attach_file),
+            ),
             Expanded(
               child: Focus(
                 // On desktop and web, Enter sends and Shift+Enter adds a line. On phones Enter

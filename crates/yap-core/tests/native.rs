@@ -30,6 +30,7 @@ native!(
     typing_long_drafts_keep_the_tail_on_a_char_boundary,
     api_end_to_end_chat_and_typing,
     vault_seals_and_binds_to_key_and_context,
+    blob_seals_files_through_the_byte_api,
     derive_key_separates_purposes,
     api_errors_are_returned_not_panicked,
     api_password_login_through_the_byte_api,

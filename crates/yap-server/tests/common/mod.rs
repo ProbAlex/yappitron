@@ -24,7 +24,9 @@ use tower::ServiceExt;
 use yap_core::auth;
 use yap_core::link;
 use yap_core::mls::Device;
+use yap_server::blobs::BlobStore;
 use yap_server::mail::MemoryMailer;
+use yap_server::previews::LinkFetcher;
 use yap_server::{AppState, migrate, router};
 
 pub const SERVER_ID: &[u8] = b"yap.test";
@@ -37,6 +39,22 @@ pub struct Harness {
 }
 
 pub async fn harness() -> Option<Harness> {
+    harness_with(None, None).await
+}
+
+/// A harness with link previews on. `fetcher` decides what it may reach.
+pub async fn link_harness(fetcher: LinkFetcher) -> Option<Harness> {
+    harness_with(None, Some(fetcher)).await
+}
+
+/// A harness with encrypted attachments on: files go to a fresh temp dir, with the given
+/// per-file cap and per-account quota (bytes).
+pub async fn blob_harness(max: u64, quota: u64) -> Option<Harness> {
+    let dir = std::env::temp_dir().join(unique("yap-blobs-"));
+    harness_with(Some(BlobStore::new(dir, max, quota)), None).await
+}
+
+async fn harness_with(blobs: Option<BlobStore>, links: Option<LinkFetcher>) -> Option<Harness> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         eprintln!("SKIPPED: set TEST_DATABASE_URL to run server integration tests");
         return None;
@@ -48,9 +66,15 @@ pub async fn harness() -> Option<Harness> {
         .expect("connect to test database");
     migrate(&db).await.expect("migrate");
     let mailer = Arc::new(MemoryMailer::default());
-    let state = AppState::new(db.clone(), &[9u8; 32], "yap.test", mailer.clone())
+    let mut state = AppState::new(db.clone(), &[9u8; 32], "yap.test", mailer.clone())
         .await
         .expect("app state");
+    if let Some(b) = blobs {
+        state = state.with_blobs(b);
+    }
+    if let Some(l) = links {
+        state = state.with_link_previews(l);
+    }
     Some(Harness {
         app: router(state),
         mailer,
@@ -96,6 +120,33 @@ impl Harness {
 
     pub async fn post(&self, path: &str, body: Value) -> (StatusCode, Value) {
         self.call(Method::POST, path, Some(body), None).await
+    }
+
+    /// A request with a raw binary body (and response), for attachments.
+    pub async fn call_raw(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        bearer: Option<&str>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("x-forwarded-for", "203.0.113.7")
+            .header("content-length", body.len());
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        let resp = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes.to_vec())
     }
 
     /// How many emails have gone to `email` so far.

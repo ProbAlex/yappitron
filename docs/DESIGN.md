@@ -14,13 +14,14 @@ Yappitron is a self-hosted, end-to-end encrypted messenger that replaces IMO HD.
 
 | In v1 | Later |
 |---|---|
-| Sign up with email, password and username; email verification | Files and images |
+| Sign up with email, password and username; email verification | Voice messages, inline video playback |
 | Password reset by email | Read receipts, online status |
 | 1:1 text chat, E2EE, found by exact username | Push notifications |
 | Message requests (strangers can't message until accepted) | Groups, calls |
 | Live typing, per-chat toggle | Disappearing messages |
 | Multi-device, history kept forever | 2FA (TOTP), sealed sender |
 | Emoji and non-Latin text on the web (fonts served from our own server) | |
+| Photos, videos and files (end-to-end encrypted, stored on the NAS), tappable links and opt-in link previews, see [MEDIA.md](MEDIA.md) | |
 | Web, desktop, Android, iOS builds | CI, reproducible web builds |
 
 ## Repository layout
@@ -100,6 +101,7 @@ The server must know the contact graph and sequence numbers. A `Bus` trait is in
 | M2 | Message requests, 1:1 messaging, stored log, offline catch-up. **Done** end to end (server, core, Flutter UI). Verified with 16 server integration tests and a two-browser end-to-end test |
 | M3 | Live typing. **Done**: drafts batch every 200 ms and appear live in the other browser; verified end to end |
 | M4 | Multi-device approval, history archive, recovery key, identity reset. **Done**: approval with a fingerprint check, adding the device to every conversation, history via the archive, recovery key, device removal. Not done: removing a revoked device from encryption groups |
+| M4b | Attachments and link previews. **Done**: encrypted files, inline photos, link cards built by the sender, hardened fetcher. Not done: inline video, thumbnails, streaming of very large files |
 | M5 | Platform builds, backups, hardening, no-log audit |
 
 ## Testing

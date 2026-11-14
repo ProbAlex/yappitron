@@ -146,6 +146,18 @@ void main() {
       expect(() => core.vaultOpen(key, 'history:b', sealed), throwsA(isA<CoreException>()));
     });
 
+    test('files are encrypted and opened through the core', () {
+      final key = Uint8List.fromList(List.filled(32, 3));
+      final file = Uint8List.fromList(List.generate(150000, (i) => i % 251)); // several chunks
+      final sealed = core.blobSeal(key, file);
+      expect(sealed.length, greaterThan(file.length));
+      expect(core.blobOpen(key, sealed), file);
+      expect(() => core.blobOpen(Uint8List.fromList(List.filled(32, 4)), sealed), throwsA(isA<CoreException>()));
+      final damaged = Uint8List.fromList(sealed)..[80000] ^= 1;
+      expect(() => core.blobOpen(key, damaged), throwsA(isA<CoreException>()));
+      expect(core.blobOpen(key, core.blobSeal(key, Uint8List(0))), isEmpty);
+    });
+
     test('username rules come from the core', () {
       expect(core.usernameCanonicalize('Alice_1'), 'alice_1');
       expect(() => core.usernameCanonicalize('no spaces'), throwsA(isA<CoreException>()));

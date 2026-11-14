@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
+use yap_server::blobs::{BlobStore, clean_tmp};
 use yap_server::config::Config;
 use yap_server::mail::{FileMailer, Mailer, SmtpMailer};
 use yap_server::{AppState, migrate, router, serve_web, sweep_forever};
@@ -40,9 +41,25 @@ async fn run() -> Result<(), String> {
         (None, Some(smtp)) => Arc::new(SmtpMailer::new(smtp)?),
         (None, None) => unreachable!("Config::from_env requires one of them"),
     };
-    let state = AppState::new(db.clone(), &cfg.secret, &cfg.domain, mailer)
+    let mut state = AppState::new(db.clone(), &cfg.secret, &cfg.domain, mailer)
         .await?
         .with_code_limit_per_ip(cfg.code_limit_per_ip);
+    if cfg.link_previews {
+        let fetcher = if cfg.dev_link_private {
+            eprintln!(
+                "WARNING: YAP_DEV_LINK_PREVIEW_PRIVATE is set; link previews may reach private addresses (development only)"
+            );
+            yap_server::previews::LinkFetcher::allowing_private_addresses()
+        } else {
+            yap_server::previews::LinkFetcher::new()
+        };
+        state = state.with_link_previews(fetcher);
+    }
+    if let Some(dir) = &cfg.blob_dir {
+        let store = BlobStore::new(dir, cfg.max_blob_bytes, cfg.blob_quota_bytes);
+        clean_tmp(&store).await;
+        state = state.with_blobs(store);
+    }
     tokio::spawn(sweep_forever(db));
 
     let listener = tokio::net::TcpListener::bind(cfg.bind)

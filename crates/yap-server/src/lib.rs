@@ -1,6 +1,7 @@
 //! Yappitron gateway server.
 
 pub mod auth;
+pub mod blobs;
 pub mod chat;
 pub mod config;
 pub mod devices;
@@ -8,6 +9,7 @@ pub mod error;
 pub mod hub;
 pub mod limiter;
 pub mod mail;
+pub mod previews;
 pub mod secrets;
 pub mod state;
 pub mod ws;
@@ -108,6 +110,15 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/welcomes/{id}",
             axum::routing::delete(chat::delete_welcome),
         )
+        .route(
+            "/api/v1/conversations/{id}/blobs",
+            axum::routing::put(blobs::upload),
+        )
+        .route(
+            "/api/v1/blobs/{id}",
+            get(blobs::download).delete(blobs::delete),
+        )
+        .route("/api/v1/link-preview", post(previews::link_preview))
         .route("/ws", get(ws::ws_handler))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)

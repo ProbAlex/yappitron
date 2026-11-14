@@ -34,6 +34,10 @@ final resendKey = Platform.environment['YAP_E2E_RESEND_KEY'];
 /// account tamper with the database). Null when running against a deployed server.
 final pgContainer = Platform.environment['YAP_E2E_PG'];
 
+/// Where the local gateway keeps encrypted attachments (set by `e2e/run.sh`), so tests can look
+/// at what is actually stored. Null against a deployed server.
+final blobDir = Platform.environment['YAP_E2E_BLOB_DIR'];
+
 Future<String> sql(String statement) async {
   final r = await Process.run('docker', ['exec', pgContainer!, 'psql', '-U', 'postgres', '-d', 'yape2e', '-Atc', statement]);
   if (r.exitCode != 0) fail('sql failed: ${r.stderr}');
@@ -441,6 +445,175 @@ void main() {
         bob.dispose();
       }), skip: skip, timeout: const Timeout(Duration(seconds: 150)));
 
+  /// Two accounts with an accepted conversation between them.
+  Future<(YapApp, YapApp, String, String)> chatting() async {
+    final (alice, _, _) = await signUp('alice');
+    final (bob, _, bobName) = await signUp('bob');
+    final convId = await alice.startConversation(bobName);
+    await eventually(() => bob.conversation(convId) != null, what: 'Bob to receive the request');
+    await bob.accept(bob.conversation(convId)!);
+    await eventually(() => alice.conversation(convId)!.state == ConversationState.joined);
+    return (alice, bob, convId, bobName);
+  }
+
+  Uint8List pattern(int n, int seed) => Uint8List.fromList(List.generate(n, (i) => (i * 7 + seed) % 251));
+
+  test('photos and files are encrypted on the device, stored opaque, and opened only with the key from the message',
+      () => diagnosing(() async {
+        final (alice, bob, convId, _) = await chatting();
+        final a = alice.conversation(convId)!;
+
+        // A "photo" that is not decodable on purpose (this test is about bytes, not pixels), a
+        // multi-chunk document with an easy-to-spot marker, and a tiny file.
+        final photo = OutgoingFile(name: 'holiday.png', mime: 'image/png', bytes: pattern(70000, 1), width: 640, height: 480);
+        final marker = utf8.encode('TOP-SECRET-MARKER-${Random().nextInt(1 << 30)}');
+        final docBytes = Uint8List.fromList([for (var i = 0; i < 20; i++) ...marker, ...pattern(9000, 2)]); // > 1 chunk
+        final doc = OutgoingFile(name: 'plan.pdf', mime: 'application/pdf', bytes: docBytes);
+        final tiny = OutgoingFile(name: 'note.txt', mime: 'text/plain', bytes: Uint8List.fromList(utf8.encode('hi')));
+
+        await alice.sendFiles(a, [photo, doc, tiny], caption: 'here you go');
+        expect(alice.busy, isEmpty, reason: 'the upload indicator clears');
+
+        await eventually(() => bob.conversation(convId)!.messages.isNotEmpty, what: 'Bob to receive the files');
+        final m = bob.conversation(convId)!.messages.single;
+        expect(m.text, 'here you go');
+        expect(m.mine, isFalse);
+        expect(m.attachments.map((x) => (x.name, x.kind, x.size)),
+            [('holiday.png', AttachmentKind.image, 70000), ('plan.pdf', AttachmentKind.file, docBytes.length), ('note.txt', AttachmentKind.file, 2)]);
+        expect((m.attachments.first.width, m.attachments.first.height), (640, 480));
+        expect(m.summary, 'here you go');
+
+        // Bob downloads and decrypts each one; the bytes are exactly what Alice picked.
+        expect(await bob.loadAttachment(m.attachments[0]), photo.bytes);
+        expect(await bob.loadAttachment(m.attachments[1]), docBytes);
+        expect(await bob.loadAttachment(m.attachments[2]), tiny.bytes);
+        // Alice, the sender, can open her own too (her other devices need this).
+        expect(await alice.loadAttachment(a.messages.single.attachments[1]), docBytes);
+
+        // The chat list shows something sensible for a file-only message.
+        await alice.sendFiles(a, [tiny]);
+        await eventually(() => bob.conversation(convId)!.messages.length == 2);
+        expect(bob.conversation(convId)!.messages.last.summary, 'note.txt');
+
+        if (blobDir != null) {
+          // What the server holds is opaque: no file contains the marker or the pattern.
+          final files = Directory(blobDir!).listSync(recursive: true).whereType<File>().where((f) => !f.path.startsWith('$blobDir/tmp/')).toList();
+          expect(files.length, 4, reason: 'three files plus the one sent alone');
+          for (final f in files) {
+            final bytes = f.readAsBytesSync();
+            expect(_contains(bytes, Uint8List.fromList(marker)), isFalse, reason: 'plaintext marker found in ${f.path}');
+            expect(_contains(bytes, photo.bytes.sublist(100, 164)), isFalse, reason: 'plaintext pixels found in ${f.path}');
+          }
+          // A file changed on disk is detected, not shown as if it were fine.
+          final target = files.firstWhere((f) => f.lengthSync() == 9 + 2 + 16);
+          final raw = target.readAsBytesSync();
+          raw[raw.length - 3] ^= 1;
+          target.writeAsBytesSync(raw);
+          await expectLater(alice.loadAttachment(a.messages.last.attachments.single), throwsA(isA<ApiException>()));
+        }
+
+        // Someone who is not in the conversation cannot download it.
+        final (mallory, _, _) = await signUp('mallory');
+        await expectLater(mallory.loadAttachment(m.attachments[0]), throwsA(isA<ApiException>()));
+
+        mallory.dispose();
+        alice.dispose();
+        bob.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
+
+  test('link previews: off by default, built by the sender, and the recipient never contacts the website', () => diagnosing(() async {
+        // A tiny website that counts who visits.
+        final png = pattern(3000, 9);
+        final visits = <String>[];
+        final web = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        web.listen((req) {
+          visits.add(req.uri.path);
+          if (req.uri.path == '/cover.png') {
+            req.response.headers.contentType = ContentType('image', 'png');
+            req.response.add(png);
+          } else {
+            req.response.headers.contentType = ContentType.html;
+            req.response.write('<head><title>Fallback</title><meta property="og:title" content="A <b>great</b> read">'
+                '<meta property="og:description" content="Summary of the page">'
+                '<meta property="og:image" content="/cover.png"></head>');
+          }
+          req.response.close();
+        });
+        final url = 'http://127.0.0.1:${web.port}/story';
+
+        final (alice, bob, convId, _) = await chatting();
+        final a = alice.conversation(convId)!;
+        final b = bob.conversation(convId)!;
+
+        // Off by default: the link is sent as plain text and the website is never asked.
+        expect(alice.linkPreviews, isFalse);
+        await alice.send(a, 'first $url');
+        await eventually(() => b.messages.length == 1);
+        expect(b.messages.single.previews, isEmpty);
+        expect(b.messages.single.text, 'first $url');
+        expect(visits, isEmpty);
+
+        // On: the sender's app gets a card (through the gateway) and sends it inside the message.
+        await alice.setLinkPreviews(true);
+        await alice.send(a, 'second $url');
+        await eventually(() => b.messages.length == 2, what: 'the message with a card');
+        final card = b.messages.last.previews.single;
+        expect(card.url, url);
+        expect(card.title, 'A <b>great</b> read', reason: 'shown as text, never interpreted');
+        expect(card.description, 'Summary of the page');
+        expect(card.image, isNotNull);
+        expect(visits.toSet(), {'/story', '/cover.png'}, reason: 'the gateway fetched it once, for the sender');
+        final fetched = visits.length;
+
+        // Bob opens the picture: it comes from our server, decrypted with the key in the message.
+        expect(await bob.loadAttachment(card.image!), png);
+        expect(visits.length, fetched, reason: 'the recipient never contacted the website');
+
+        // A link the gateway cannot fetch does not stop the message.
+        await alice.send(a, 'broken http://127.0.0.1:1/nothing');
+        await eventually(() => b.messages.length == 3);
+        expect(b.messages.last.previews, isEmpty);
+
+        // The setting is remembered on this device.
+        expect(alice.linkPreviews, isTrue);
+
+        await web.close(force: true);
+        alice.dispose();
+        bob.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 90)));
+
+  test('a file sent before a second device existed is available on it after approval', () => diagnosing(() async {
+        final (alice1, _, aliceName) = await signUp('alice');
+        final (bob, _, bobName) = await signUp('bob');
+        final convId = await alice1.startConversation(bobName);
+        await eventually(() => bob.conversation(convId) != null);
+        await bob.accept(bob.conversation(convId)!);
+        await eventually(() => alice1.conversation(convId)!.state == ConversationState.joined);
+
+        final bytes = pattern(150000, 5);
+        await bob.sendFiles(bob.conversation(convId)!, [OutgoingFile(name: 'report.pdf', mime: 'application/pdf', bytes: bytes)], caption: 'the report');
+        await eventually(() => alice1.conversation(convId)!.messages.length == 1, what: 'device 1 to get the file');
+
+        final alice2 = YapApp(core: core, store: MemoryStore(), serverUrl: server!, deviceLabel: 'Laptop')
+          // ignore: avoid_print
+          ..onBackgroundError = (e, st) => print('[alice2] background error: $e\n$st');
+        await alice2.login(aliceName, password);
+        await eventually(() => alice1.pendingLinks.isNotEmpty, what: 'the approval request');
+        await alice1.approve(await alice1.prepareApproval(alice1.pendingLinks.first));
+        await eventually(() => alice2.phase == Phase.signedIn);
+        await eventually(() => alice2.conversation(convId)?.messages.length == 1, what: 'history on the new device');
+
+        final m = alice2.conversation(convId)!.messages.single;
+        expect(m.text, 'the report');
+        expect(m.attachments.single.name, 'report.pdf');
+        // The key came through the encrypted history, so the new device can open the file.
+        expect(await alice2.loadAttachment(m.attachments.single), bytes);
+
+        alice1.dispose();
+        alice2.dispose();
+        bob.dispose();
+      }), skip: skip, timeout: const Timeout(Duration(seconds: 120)));
+
   test('wrong password and unknown user are refused; password reset works', () => diagnosing(() async {
     final (app, _, name) = await signUp('carol');
     await app.logout();
@@ -460,4 +633,15 @@ void main() {
     expect(app.phase, Phase.signedIn);
     app.dispose();
   }), skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+}
+
+bool _contains(Uint8List haystack, Uint8List needle) {
+  outer:
+  for (var i = 0; i + needle.length <= haystack.length; i++) {
+    for (var j = 0; j < needle.length; j++) {
+      if (haystack[i + j] != needle[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
